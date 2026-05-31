@@ -1,0 +1,30 @@
+[package]
+name = "inkreader"
+version = "0.1.0"
+description = "A local comic repository reader"
+authors = ["InkReader"]
+edition = "2021"
+
+[package.metadata.tauri]
+
+[lib]
+name = "inkreader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-fs = "2.2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+zip = "2"
+unrar-ng = "0.7"
+percent-encoding = "2"
+natord = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1.16", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting"] }

@@ -1,0 +1,77 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookSummary {
+    pub id: String,
+    pub repository_id: String,
+    pub source_id: Option<String>,
+    pub title: String,
+    pub scanned_title: String,
+    pub title_override: Option<String>,
+    pub path: String,
+    pub kind: String,
+    pub metadata_path: Option<String>,
+    pub cover_path: Option<String>,
+    pub description: Option<String>,
+    pub authors: Vec<String>,
+    pub tags: Vec<String>,
+    pub chapter_count: usize,
+    pub total_pages: usize,
+    pub last_chapter_id: Option<String>,
+    pub last_page: usize,
+    pub last_read_at: Option<String>,
+    pub is_favorite: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookListRequest {
+    pub repository_id: Option<String>,
+    pub collection_id: Option<String>,
+    pub query: Option<String>,
+    pub tag: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub sort_key: Option<String>,
+    pub sort_direction: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookListResponse {
+    pub books: Vec<BookSummary>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Book {
+    pub id: String,
+    pub repository_id: String,
+    pub source_id: Option<String>,
+    pub title: String,
+    pub scanned_title: String,
+    pub title_override: Option<String>,
+    pub path: String,
+    pub kind: String,
+    pub metadata_path: Option<String>,
+    pub cover_path: Option<String>,
+    pub description: Option<String>,
+    pub authors: Vec<String>,
+    pub tags: Vec<String>,
+    pub chapter_count: usize,
+    pub total_pages: usize,
+    pub last_chapter_id: Option<String>,
+    pub last_page: usize,
+    pub last_read_at: Option<String>,
+    pub is_favorite: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing)]
+    pub scan_signature: Option<String>,
+    pub chapters: Vec<crate::models::chapter::Chapter>,
+}

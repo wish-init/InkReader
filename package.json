@@ -1,0 +1,34 @@
+{
+  "name": "inkreader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "pnpm check:env && tauri dev",
+    "check:env": "node scripts/check-env.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "pnpm check:env && tauri dev",
+    "tauri:build": "pnpm tauri:build:installer",
+    "tauri:build:installer": "pnpm check:env && tauri build --bundles nsis",
+    "tauri:build:portable": "pnpm check:env && tauri build --no-bundle && node scripts/package-portable.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "naive-ui": "^2.44.1",
+    "vite": "^6.3.5",
+    "vue": "^3.5.14",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/node": "^22.15.24",
+    "typescript": "^5.8.3",
+    "vue-tsc": "^2.2.10"
+  },
+  "packageManager": "pnpm@10.11.0"
+}
