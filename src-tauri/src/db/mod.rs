@@ -10,13 +10,14 @@ use tauri::Manager;
 use crate::{
     errors::{AppError, AppResult},
     models::{
-        book::{Book, BookListRequest, BookListResponse, BookSummary},
+        book::{Book, BookListRequest, BookListResponse, BookSummary, BookThumbnail},
         chapter::Chapter,
         favorite::FavoriteCollection,
         history::ReadingHistoryRecord,
         page::Page,
         repository::Repository,
     },
+    thumbnail,
 };
 
 pub struct Database {
@@ -96,6 +97,7 @@ impl Database {
               kind TEXT NOT NULL,
               metadata_path TEXT,
               cover_path TEXT,
+              thumbnail_path TEXT,
               description TEXT,
               authors_json TEXT NOT NULL DEFAULT '[]',
               tags_json TEXT NOT NULL DEFAULT '[]',
@@ -222,6 +224,7 @@ impl Database {
         add_column_if_missing(&connection, "books", "scanned_title", "TEXT")?;
         add_column_if_missing(&connection, "books", "title_override", "TEXT")?;
         add_column_if_missing(&connection, "books", "scan_signature", "TEXT")?;
+        add_column_if_missing(&connection, "books", "thumbnail_path", "TEXT")?;
         connection.execute(
             "UPDATE books SET scanned_title = title WHERE scanned_title IS NULL OR TRIM(scanned_title) = ''",
             [],
@@ -533,6 +536,69 @@ impl Database {
 
     pub fn list_books(&self, request: BookListRequest) -> AppResult<BookListResponse> {
         self.list_book_summaries(request, false)
+    }
+
+    pub fn ensure_book_thumbnails(&self, book_ids: Vec<String>) -> AppResult<Vec<BookThumbnail>> {
+        let connection = self.connect()?;
+        let thumbnail_dir = thumbnail::thumbnail_dir_from_database_path(&self.path);
+        let mut results = Vec::new();
+
+        for requested_book_id in book_ids {
+            let book = connection
+                .query_row(
+                    "SELECT id, path, kind, cover_path, thumbnail_path FROM books WHERE id = ?1",
+                    params![&requested_book_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .ok();
+
+            let Some((book_id, book_path, kind, cover_path, existing_thumbnail_path)) = book else {
+                results.push(BookThumbnail {
+                    book_id: requested_book_id,
+                    thumbnail_path: None,
+                });
+                continue;
+            };
+
+            if let Some(existing_thumbnail_path) =
+                existing_thumbnail_path.filter(|path| Path::new(path).is_file())
+            {
+                results.push(BookThumbnail {
+                    book_id,
+                    thumbnail_path: Some(existing_thumbnail_path),
+                });
+                continue;
+            }
+
+            let thumbnail_path = thumbnail::ensure_book_thumbnail(
+                &thumbnail_dir,
+                &book_id,
+                &book_path,
+                &kind,
+                cover_path.as_deref(),
+            )
+            .unwrap_or(None);
+
+            connection.execute(
+                "UPDATE books SET thumbnail_path = ?1 WHERE id = ?2",
+                params![thumbnail_path.as_deref(), &book_id],
+            )?;
+
+            results.push(BookThumbnail {
+                book_id,
+                thumbnail_path,
+            });
+        }
+
+        Ok(results)
     }
 
     pub fn list_favorite_books(&self, request: BookListRequest) -> AppResult<BookListResponse> {
@@ -1366,10 +1432,10 @@ fn insert_book(
 
     transaction.execute(
         "INSERT INTO books (
-          id, repository_id, source_id, title, scanned_title, title_override, path, kind, metadata_path, cover_path,
+          id, repository_id, source_id, title, scanned_title, title_override, path, kind, metadata_path, cover_path, thumbnail_path,
           description, authors_json, tags_json, chapter_count, total_pages,
           last_chapter_id, last_page, last_read_at, created_at, updated_at, scan_signature
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             &book.id,
             &book.repository_id,
@@ -1381,6 +1447,7 @@ fn insert_book(
             &book.kind,
             book.metadata_path.as_deref(),
             book.cover_path.as_deref(),
+            book.thumbnail_path.as_deref(),
             book.description.as_deref(),
             &authors_json,
             &tags_json,
@@ -1501,7 +1568,7 @@ fn book_summary_select_sql() -> &'static str {
             COALESCE(NULLIF(scanned_title, ''), title) AS scanned_title,
             title_override,
             path, kind, metadata_path, cover_path,
-            description, authors_json, tags_json, chapter_count, total_pages,
+            thumbnail_path, description, authors_json, tags_json, chapter_count, total_pages,
             last_chapter_id, last_page,
             EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path) AS is_favorite,
             created_at, updated_at, last_read_at
@@ -1620,8 +1687,8 @@ fn book_list_order_clause(sort_key: &str, sort_direction: &str) -> &'static str 
 }
 
 fn map_book_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookSummary> {
-    let authors_json: String = row.get(11)?;
-    let tags_json: String = row.get(12)?;
+    let authors_json: String = row.get(12)?;
+    let tags_json: String = row.get(13)?;
     Ok(BookSummary {
         id: row.get(0)?,
         repository_id: row.get(1)?,
@@ -1633,17 +1700,18 @@ fn map_book_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookSummary
         kind: row.get(7)?,
         metadata_path: row.get(8)?,
         cover_path: row.get(9)?,
-        description: row.get(10)?,
+        thumbnail_path: row.get(10)?,
+        description: row.get(11)?,
         authors: serde_json::from_str(&authors_json).unwrap_or_default(),
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-        chapter_count: row.get::<_, i64>(13)? as usize,
-        total_pages: row.get::<_, i64>(14)? as usize,
-        last_chapter_id: row.get(15)?,
-        last_page: row.get::<_, i64>(16)? as usize,
-        is_favorite: row.get::<_, i64>(17)? != 0,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
-        last_read_at: row.get(20)?,
+        chapter_count: row.get::<_, i64>(14)? as usize,
+        total_pages: row.get::<_, i64>(15)? as usize,
+        last_chapter_id: row.get(16)?,
+        last_page: row.get::<_, i64>(17)? as usize,
+        is_favorite: row.get::<_, i64>(18)? != 0,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        last_read_at: row.get(21)?,
     })
 }
 
@@ -1660,6 +1728,7 @@ fn map_book_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         kind: summary.kind,
         metadata_path: summary.metadata_path,
         cover_path: summary.cover_path,
+        thumbnail_path: summary.thumbnail_path,
         description: summary.description,
         authors: summary.authors,
         tags: summary.tags,
@@ -1748,6 +1817,7 @@ mod tests {
             kind: "folder".to_string(),
             metadata_path: None,
             cover_path: None,
+            thumbnail_path: None,
             description: None,
             authors: Vec::new(),
             tags: Vec::new(),

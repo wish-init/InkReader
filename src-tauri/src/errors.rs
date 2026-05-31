@@ -52,4 +52,10 @@ impl From<zip::result::ZipError> for AppError {
     }
 }
 
+impl From<image::ImageError> for AppError {
+    fn from(value: image::ImageError) -> Self {
+        Self::Io(value.to_string())
+    }
+}
+
 pub type AppResult<T> = Result<T, AppError>;

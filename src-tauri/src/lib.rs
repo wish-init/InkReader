@@ -4,6 +4,7 @@ pub mod errors;
 pub mod metadata;
 pub mod models;
 pub mod scanner;
+pub mod thumbnail;
 
 use db::Database;
 use scanner::archive_reader;
@@ -163,6 +164,7 @@ pub fn run() {
             commands::bookmark::delete_bookmark,
             commands::bookmark::is_page_bookmarked,
             commands::library::list_books,
+            commands::library::ensure_book_thumbnails,
             commands::library::list_favorite_books,
             commands::library::list_book_tags,
             commands::library::list_favorite_collections,

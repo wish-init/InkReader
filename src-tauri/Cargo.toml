@@ -28,3 +28,4 @@ natord = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1.16", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

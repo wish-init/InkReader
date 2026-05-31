@@ -3,7 +3,7 @@ use tauri::State;
 use crate::{
     errors::AppResult,
     models::{
-        book::{Book, BookListRequest, BookListResponse},
+        book::{Book, BookListRequest, BookListResponse, BookThumbnail},
         chapter::Chapter,
         favorite::FavoriteCollection,
     },
@@ -16,6 +16,14 @@ pub fn list_books(
     request: BookListRequest,
 ) -> AppResult<BookListResponse> {
     state.database.list_books(request)
+}
+
+#[tauri::command]
+pub fn ensure_book_thumbnails(
+    state: State<'_, AppState>,
+    book_ids: Vec<String>,
+) -> AppResult<Vec<BookThumbnail>> {
+    state.database.ensure_book_thumbnails(book_ids)
 }
 
 #[tauri::command]

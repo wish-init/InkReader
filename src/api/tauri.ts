@@ -40,6 +40,7 @@ export type BookSummary = {
   kind: 'folder' | 'zip' | 'cbz' | 'rar' | 'cbr'
   metadataPath?: string
   coverPath?: string
+  thumbnailPath?: string | null
   description?: string
   authors: string[]
   tags: string[]
@@ -71,6 +72,11 @@ export type BookListRequest = {
 export type BookListResponse = {
   books: BookSummary[]
   total: number
+}
+
+export type BookThumbnail = {
+  bookId: string
+  thumbnailPath?: string | null
 }
 
 export type Book = BookSummary & {

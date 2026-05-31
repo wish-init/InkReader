@@ -13,6 +13,7 @@ pub struct BookSummary {
     pub kind: String,
     pub metadata_path: Option<String>,
     pub cover_path: Option<String>,
+    pub thumbnail_path: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
@@ -49,6 +50,13 @@ pub struct BookListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BookThumbnail {
+    pub book_id: String,
+    pub thumbnail_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Book {
     pub id: String,
     pub repository_id: String,
@@ -60,6 +68,7 @@ pub struct Book {
     pub kind: String,
     pub metadata_path: Option<String>,
     pub cover_path: Option<String>,
+    pub thumbnail_path: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,

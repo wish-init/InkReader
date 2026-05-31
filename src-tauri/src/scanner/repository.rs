@@ -27,7 +27,12 @@ use crate::{
 };
 
 pub fn scan_repository(path: PathBuf) -> AppResult<RepositoryScanResult> {
-    scan_repository_with_options(path, None, &HashMap::new(), None::<fn(RepositoryScanProgress)>)
+    scan_repository_with_options(
+        path,
+        None,
+        &HashMap::new(),
+        None::<fn(RepositoryScanProgress)>,
+    )
 }
 
 pub fn scan_repository_incremental<F>(
@@ -299,8 +304,11 @@ fn collect_signature_parts(path: &Path, parts: &mut Vec<String>) -> AppResult<()
                 || entry_path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == "元数据.json" || name.eq_ignore_ascii_case("cover.jpg"))
-                || entry_path.is_file() && (is_supported_image(&entry_path) || is_supported_archive(&entry_path))
+                    .is_some_and(|name| {
+                        name == "元数据.json" || name.eq_ignore_ascii_case("cover.jpg")
+                    })
+                || entry_path.is_file()
+                    && (is_supported_image(&entry_path) || is_supported_archive(&entry_path))
             {
                 collect_signature_parts(&entry_path, parts)?;
             }
@@ -317,7 +325,11 @@ fn find_duplicate_books(books: &[Book]) -> Vec<RepositoryDuplicateBook> {
     let mut reported = HashSet::new();
 
     for book in books {
-        if let Some(source_id) = book.source_id.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(source_id) = book
+            .source_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             if let Some(existing) = seen_source_ids.get(source_id) {
                 if reported.insert(book.path.clone()) {
                     duplicates.push(RepositoryDuplicateBook {
@@ -434,6 +446,7 @@ fn scan_archive_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult
         kind: archive_book_kind(&path).to_string(),
         metadata_path: None,
         cover_path,
+        thumbnail_path: None,
         description: fields.description,
         authors: fields.authors,
         tags: fields.tags,
@@ -536,6 +549,7 @@ fn scan_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult<Option<
         cover_path: cover_path
             .map(|path| path.to_string_lossy().to_string())
             .or(fallback_cover_path),
+        thumbnail_path: None,
         description: fields.description,
         authors: fields.authors,
         tags: fields.tags,

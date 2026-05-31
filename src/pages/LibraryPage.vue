@@ -25,6 +25,7 @@ import {
 import {
   addBookToFavoriteCollection,
   createFavoriteCollection,
+  ensureBookThumbnails,
   listBookFavoriteCollections,
   listBooks,
   listBookTags,
@@ -107,6 +108,7 @@ const renameTitleValue = ref('')
 const renameSubmitting = ref(false)
 let searchTimer: number | undefined
 let requestToken = 0
+let thumbnailRequestToken = 0
 let initialized = false
 
 const sortKeyOptions: SelectOption[] = [
@@ -134,21 +136,25 @@ async function loadInitialData() {
   loading.value = true
   error.value = ''
   try {
-    const [nextSettings, nextCollections, nextTags] = await Promise.all([
-      getLibraryViewSettings(),
-      listFavoriteCollections(),
-      listBookTags(),
-    ])
-    favoriteCollections.value = nextCollections
+    const nextSettings = await getLibraryViewSettings()
     viewSettings.value = { ...defaultViewSettings, ...nextSettings }
-    allTags.value = nextTags
     await loadBooks()
     initialized = true
+    void loadDeferredLibraryData()
   } catch (innerError) {
     error.value = String(innerError)
   } finally {
     loading.value = false
   }
+}
+
+async function loadDeferredLibraryData() {
+  const [nextCollections, nextTags] = await Promise.all([
+    listFavoriteCollections().catch(() => favoriteCollections.value),
+    listBookTags().catch(() => allTags.value),
+  ])
+  favoriteCollections.value = nextCollections
+  allTags.value = nextTags
 }
 
 async function loadBooks() {
@@ -167,6 +173,7 @@ async function loadBooks() {
     if (token !== requestToken) return
     books.value = response.books
     totalBooks.value = response.total
+    void hydrateVisibleBookThumbnails(response.books)
     if (currentPage.value > pageCount.value) {
       currentPage.value = pageCount.value
       saveLibraryState()
@@ -177,6 +184,29 @@ async function loadBooks() {
   } finally {
     if (token === requestToken) pageLoading.value = false
   }
+}
+
+async function hydrateVisibleBookThumbnails(sourceBooks: BookSummary[]) {
+  const missingThumbnailIds = sourceBooks
+    .filter((book) => book.coverPath && !book.thumbnailPath)
+    .map((book) => book.id)
+  if (!missingThumbnailIds.length) return
+
+  const token = ++thumbnailRequestToken
+  const thumbnails = await ensureBookThumbnails(missingThumbnailIds).catch(() => [])
+  if (token !== thumbnailRequestToken || !thumbnails.length) return
+
+  const thumbnailByBookId = new Map(
+    thumbnails
+      .filter((thumbnail) => thumbnail.thumbnailPath)
+      .map((thumbnail) => [thumbnail.bookId, thumbnail.thumbnailPath]),
+  )
+  if (!thumbnailByBookId.size) return
+
+  books.value = books.value.map((book) => {
+    const thumbnailPath = thumbnailByBookId.get(book.id)
+    return thumbnailPath ? { ...book, thumbnailPath } : book
+  })
 }
 
 function loadLibraryState(): LibraryListState {

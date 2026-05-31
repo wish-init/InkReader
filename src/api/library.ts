@@ -3,12 +3,17 @@ import {
   type Book,
   type BookListRequest,
   type BookListResponse,
+  type BookThumbnail,
   type Chapter,
   type FavoriteCollection,
 } from './tauri'
 
 export function listBooks(request: BookListRequest = {}): Promise<BookListResponse> {
   return call('list_books', { request: normalizeBookListRequest(request) })
+}
+
+export function ensureBookThumbnails(bookIds: string[]): Promise<BookThumbnail[]> {
+  return call('ensure_book_thumbnails', { bookIds })
 }
 
 export function listFavoriteBooks(request: BookListRequest = {}): Promise<BookListResponse> {

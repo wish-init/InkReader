@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NButton, NCard, NCheckbox, NEllipsis, NTag, NText } from 'naive-ui'
-import { toArchiveUrl } from '@/api/archive'
 import { toAssetUrl, type BookSummary, type LibraryViewSettings } from '@/api/tauri'
 
 const props = withDefaults(defineProps<{
@@ -25,10 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const coverUrl = computed(() => {
-  if (props.book.kind !== 'folder' && props.book.coverPath) {
-    return toArchiveUrl(props.book.path, props.book.coverPath)
-  }
-  return toAssetUrl(props.book.coverPath)
+  return toAssetUrl(props.book.thumbnailPath)
 })
 
 const visibleTags = computed(() => {
