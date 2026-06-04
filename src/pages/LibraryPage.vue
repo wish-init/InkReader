@@ -49,7 +49,11 @@ const defaultViewSettings: LibraryViewSettings = {
 }
 
 const libraryStateKey = 'inkreader:library-list-state'
+const libraryScrollStateKey = 'inkreader:library-scroll-state'
 const defaultPageSize = 80
+const initialRenderedBookCount = 24
+const renderedBookBatchSize = 12
+const renderedBookBatchDelayMs = 80
 const pageSizeOptions: SelectOption[] = [
   { label: '每页 40 本', value: 40 },
   { label: '每页 80 本', value: 80 },
@@ -67,6 +71,11 @@ type LibraryListState = {
   currentPage: number
 }
 
+type LibraryScrollState = {
+  scrollTop: number
+  signature: string
+}
+
 const defaultLibraryState: LibraryListState = {
   query: '',
   selectedTags: [],
@@ -80,6 +89,7 @@ const router = useRouter()
 const message = useMessage()
 const libraryState = loadLibraryState()
 const books = ref<BookSummary[]>([])
+const renderedBookCount = ref(0)
 const totalBooks = ref(0)
 const favoriteCollections = ref<FavoriteCollection[]>([])
 const loading = ref(true)
@@ -107,6 +117,7 @@ const renameDialogBook = ref<BookSummary | null>(null)
 const renameTitleValue = ref('')
 const renameSubmitting = ref(false)
 let searchTimer: number | undefined
+let renderBatchTimer: number | undefined
 let requestToken = 0
 let thumbnailRequestToken = 0
 let initialized = false
@@ -131,21 +142,27 @@ const bookContextMenuOptions = computed(() => [
 const pageCount = computed(() => Math.max(1, Math.ceil(totalBooks.value / pageSize.value)))
 const hasFilters = computed(() => Boolean(debouncedQuery.value.trim() || selectedTags.value.length))
 const shouldShowToolbar = computed(() => totalBooks.value > 0 || books.value.length > 0 || hasFilters.value)
+const visibleBooks = computed(() => books.value.slice(0, renderedBookCount.value))
 
 async function loadInitialData() {
   loading.value = true
   error.value = ''
+  let shouldRestoreScroll = false
   try {
-    const nextSettings = await getLibraryViewSettings()
+    const [nextSettings] = await Promise.all([
+      getLibraryViewSettings(),
+      loadBooks(),
+    ])
     viewSettings.value = { ...defaultViewSettings, ...nextSettings }
-    await loadBooks()
     initialized = true
+    shouldRestoreScroll = true
     void loadDeferredLibraryData()
   } catch (innerError) {
     error.value = String(innerError)
   } finally {
     loading.value = false
   }
+  if (shouldRestoreScroll) await restoreLibraryScrollPosition()
 }
 
 async function loadDeferredLibraryData() {
@@ -172,6 +189,7 @@ async function loadBooks() {
     })
     if (token !== requestToken) return
     books.value = response.books
+    scheduleBookRendering(response.books.length, loadLibraryScrollTop() > 0)
     totalBooks.value = response.total
     void hydrateVisibleBookThumbnails(response.books)
     if (currentPage.value > pageCount.value) {
@@ -184,6 +202,29 @@ async function loadBooks() {
   } finally {
     if (token === requestToken) pageLoading.value = false
   }
+}
+
+function scheduleBookRendering(total: number, renderAll = false) {
+  if (renderBatchTimer) window.clearTimeout(renderBatchTimer)
+  if (renderAll) {
+    renderedBookCount.value = total
+    return
+  }
+
+  renderedBookCount.value = Math.min(total, initialRenderedBookCount)
+  if (renderedBookCount.value < total) scheduleNextBookRenderBatch()
+}
+
+function scheduleNextBookRenderBatch() {
+  renderBatchTimer = window.setTimeout(() => {
+    renderedBookCount.value = Math.min(
+      books.value.length,
+      renderedBookCount.value + renderedBookBatchSize,
+    )
+    if (renderedBookCount.value < books.value.length) {
+      scheduleNextBookRenderBatch()
+    }
+  }, renderedBookBatchDelayMs)
 }
 
 async function hydrateVisibleBookThumbnails(sourceBooks: BookSummary[]) {
@@ -243,6 +284,71 @@ function saveLibraryState() {
     pageSize: pageSize.value,
     currentPage: currentPage.value,
   }))
+}
+
+function getLibraryScrollElements() {
+  const mainPanel = document.querySelector<HTMLElement>('.main-panel')
+  if (!mainPanel) return []
+
+  return [
+    mainPanel,
+    ...Array.from(mainPanel.querySelectorAll<HTMLElement>('.n-layout-scroll-container')),
+  ]
+}
+
+function getLibraryScrollTop() {
+  return Math.max(0, ...getLibraryScrollElements().map((element) => element.scrollTop))
+}
+
+function getLibraryScrollSignature() {
+  return JSON.stringify({
+    query: debouncedQuery.value,
+    selectedTags: selectedTags.value,
+    sortKey: sortKey.value,
+    sortDirection: sortDirection.value,
+    pageSize: pageSize.value,
+    currentPage: currentPage.value,
+  })
+}
+
+function saveLibraryScrollTop(scrollTop: number) {
+  const scrollState: LibraryScrollState = {
+    scrollTop: Math.max(0, Math.round(scrollTop)),
+    signature: getLibraryScrollSignature(),
+  }
+  window.sessionStorage.setItem(libraryScrollStateKey, JSON.stringify(scrollState))
+}
+
+function saveLibraryScrollPosition() {
+  saveLibraryScrollTop(getLibraryScrollTop())
+}
+
+function loadLibraryScrollTop() {
+  try {
+    const rawValue = window.sessionStorage.getItem(libraryScrollStateKey)
+    if (!rawValue) return 0
+
+    const value = JSON.parse(rawValue) as Partial<LibraryScrollState>
+    if (value.signature !== getLibraryScrollSignature()) return 0
+    return typeof value.scrollTop === 'number' && Number.isFinite(value.scrollTop)
+      ? Math.max(0, value.scrollTop)
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+async function restoreLibraryScrollPosition() {
+  const scrollTop = loadLibraryScrollTop()
+  if (scrollTop <= 0) return
+
+  await nextTick()
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
+  getLibraryScrollElements().forEach((element) => {
+    element.scrollTo({ top: scrollTop, behavior: 'auto' })
+  })
 }
 
 function isBookSortKey(value: unknown): value is BookSortKey {
@@ -346,16 +452,21 @@ function filterTagOption(pattern: string, option: SelectOption) {
 }
 
 function openBook(book: BookSummary) {
+  saveLibraryScrollPosition()
   router.push(`/reader/${book.id}`)
 }
 
 function openBookDetail(book: BookSummary) {
+  saveLibraryScrollPosition()
   router.push(`/books/${book.id}`)
 }
 
 async function scrollListToTop() {
   await nextTick()
-  document.querySelector<HTMLElement>('.main-panel')?.scrollTo({ top: 0, behavior: 'smooth' })
+  getLibraryScrollElements().forEach((element) => {
+    element.scrollTo({ top: 0, behavior: 'auto' })
+  })
+  saveLibraryScrollTop(0)
 }
 
 async function toggleFavorite(book: BookSummary) {
@@ -499,7 +610,9 @@ onMounted(() => {
   window.addEventListener('inkreader:auto-scan-complete', handleAutoScanComplete)
 })
 onBeforeUnmount(() => {
+  saveLibraryScrollPosition()
   if (searchTimer) window.clearTimeout(searchTimer)
+  if (renderBatchTimer) window.clearTimeout(renderBatchTimer)
   window.removeEventListener('inkreader:auto-scan-complete', handleAutoScanComplete)
 })
 
@@ -572,7 +685,7 @@ function handleAutoScanComplete() {
     <template v-else-if="books.length">
       <NSpin :show="pageLoading" description="正在加载当前页...">
         <BookList
-          :books="books"
+          :books="visibleBooks"
           :settings="viewSettings"
           @open="openBook"
           @detail="openBookDetail"

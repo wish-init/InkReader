@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { NButton, NLayout, NLayoutContent, NLayoutSider, NMenu, NText, type MenuOption } from 'naive-ui'
-import { autoScanRepositories, listRepositories } from '@/api/repositories'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +33,10 @@ function handleMenuUpdate(key: string) {
   if (item && route.path !== item.path) router.push(item.path)
 }
 
+watch(siderCollapsed, (value) => {
+  window.localStorage.setItem(siderCollapsedKey, String(value))
+})
+
 function loadSiderCollapsed() {
   return window.localStorage.getItem(siderCollapsedKey) === 'true'
 }
@@ -41,27 +44,6 @@ function loadSiderCollapsed() {
 function toggleSider() {
   siderCollapsed.value = !siderCollapsed.value
 }
-
-async function autoScanOnStartup() {
-  if (window.sessionStorage.getItem('inkreader:auto-scan-started') === 'true') return
-  window.sessionStorage.setItem('inkreader:auto-scan-started', 'true')
-  try {
-    const repositories = await listRepositories()
-    if (!repositories.length) return
-    await autoScanRepositories()
-    window.dispatchEvent(new CustomEvent('inkreader:auto-scan-complete'))
-  } catch {
-    window.dispatchEvent(new CustomEvent('inkreader:auto-scan-failed'))
-  }
-}
-
-watch(siderCollapsed, (value) => {
-  window.localStorage.setItem(siderCollapsedKey, String(value))
-})
-
-onMounted(() => {
-  void autoScanOnStartup()
-})
 </script>
 
 <template>

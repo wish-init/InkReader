@@ -20,6 +20,8 @@ use crate::{
     thumbnail,
 };
 
+const BOOK_TAGS_BACKFILL_SETTING_KEY: &str = "migration:book_tags_backfilled";
+
 pub struct Database {
     path: PathBuf,
 }
@@ -1543,7 +1545,25 @@ fn normalize_tags(tags: &[String]) -> Vec<String> {
 }
 
 fn backfill_book_tags(connection: &Connection) -> AppResult<()> {
-    let mut statement = connection.prepare("SELECT id, tags_json FROM books")?;
+    let already_backfilled = connection
+        .query_row(
+            "SELECT 1 FROM settings WHERE key = ?1",
+            params![BOOK_TAGS_BACKFILL_SETTING_KEY],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_backfilled {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT books.id, books.tags_json
+         FROM books
+         WHERE books.tags_json <> '[]'
+           AND NOT EXISTS (
+             SELECT 1 FROM book_tags WHERE book_tags.book_id = books.id
+           )",
+    )?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -1559,6 +1579,12 @@ fn backfill_book_tags(connection: &Connection) -> AppResult<()> {
             )?;
         }
     }
+
+    connection.execute(
+        "INSERT OR REPLACE INTO settings (key, value, updated_at)
+         VALUES (?1, 'true', datetime('now'))",
+        params![BOOK_TAGS_BACKFILL_SETTING_KEY],
+    )?;
 
     Ok(())
 }
