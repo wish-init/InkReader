@@ -2,11 +2,14 @@
 import { computed } from 'vue'
 import { NButton, NCard, NCheckbox, NEllipsis, NTag, NText } from 'naive-ui'
 import { toAssetUrl, type BookSummary, type LibraryViewSettings } from '@/api/tauri'
+import { getReadingStatus, getReadingStatusLabel } from '@/utils/readingStatus'
+import { getReadingProgressPercent } from '@/utils/readingProgress'
 
 const props = withDefaults(defineProps<{
   book: BookSummary
   settings: LibraryViewSettings
   favoriteButtonLabel: string
+  highlightQuery?: string
   selectable?: boolean
   selected?: boolean
 }>(), {
@@ -33,11 +36,39 @@ const visibleTags = computed(() => {
 })
 
 const progressPercent = computed(() => {
-  if (!props.book.totalPages) return 0
-  return Math.min(100, Math.round(((props.book.lastPage + 1) / props.book.totalPages) * 100))
+  return getReadingProgressPercent(props.book)
 })
 
-const hasProgress = computed(() => Boolean(props.book.lastReadAt || props.book.lastPage > 0))
+const readingStatus = computed(() => getReadingStatus(props.book))
+const readingStatusLabel = computed(() => getReadingStatusLabel(readingStatus.value))
+const hasProgress = computed(() => readingStatus.value !== 'unread')
+const normalizedHighlightQuery = computed(() => normalizeText(props.highlightQuery ?? ''))
+const highlightedTitle = computed(() => highlightText(props.book.title, normalizedHighlightQuery.value))
+const highlightedAuthors = computed(() => highlightText(props.book.authors.join(' / '), normalizedHighlightQuery.value))
+
+type TextSegment = {
+  text: string
+  highlight: boolean
+}
+
+function normalizeText(value: string) {
+  return value.trim().toLocaleLowerCase()
+}
+
+function highlightText(value: string, normalizedQuery: string): TextSegment[] {
+  if (!normalizedQuery) return [{ text: value, highlight: false }]
+
+  const normalizedValue = value.toLocaleLowerCase()
+  const index = normalizedValue.indexOf(normalizedQuery)
+  if (index < 0) return [{ text: value, highlight: false }]
+
+  const endIndex = index + normalizedQuery.length
+  return [
+    { text: value.slice(0, index), highlight: false },
+    { text: value.slice(index, endIndex), highlight: true },
+    { text: value.slice(endIndex), highlight: false },
+  ].filter((segment) => segment.text)
+}
 </script>
 
 <template>
@@ -83,10 +114,16 @@ const hasProgress = computed(() => Boolean(props.book.lastReadAt || props.book.l
 
       <div class="book-info">
         <NEllipsis :line-clamp="2" class="book-title" :tooltip="false">
-          {{ props.book.title }}
+          <template v-for="(segment, index) in highlightedTitle" :key="index">
+            <mark v-if="segment.highlight" class="search-highlight">{{ segment.text }}</mark>
+            <template v-else>{{ segment.text }}</template>
+          </template>
         </NEllipsis>
         <NText v-if="props.settings.showAuthors && props.book.authors.length" depth="3" class="book-meta">
-          {{ props.book.authors.join(' / ') }}
+          <template v-for="(segment, index) in highlightedAuthors" :key="index">
+            <mark v-if="segment.highlight" class="search-highlight">{{ segment.text }}</mark>
+            <template v-else>{{ segment.text }}</template>
+          </template>
         </NText>
         <NText depth="3" class="book-meta">{{ props.book.chapterCount }} 章 · {{ props.book.totalPages }} 页</NText>
         <div class="book-progress">
@@ -94,9 +131,16 @@ const hasProgress = computed(() => Boolean(props.book.lastReadAt || props.book.l
             <span :style="{ width: `${progressPercent}%` }" />
           </span>
           <NText depth="3" class="book-meta">
-            {{ hasProgress ? `读到 ${progressPercent}%` : '未开始' }}
+            {{ hasProgress ? `${readingStatusLabel} ${progressPercent}%` : readingStatusLabel }}
           </NText>
         </div>
+        <NTag
+          size="small"
+          round
+          :type="readingStatus === 'read' ? 'success' : readingStatus === 'reading' ? 'info' : 'default'"
+        >
+          {{ readingStatusLabel }}
+        </NTag>
         <NButton
           v-if="hasProgress"
           size="tiny"

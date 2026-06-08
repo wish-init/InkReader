@@ -35,10 +35,13 @@ import {
   resetBookTitle,
 } from '@/api/library'
 import { getLibraryViewSettings, saveLibraryViewSettings } from '@/api/settings'
+import { listRepositories } from '@/api/repositories'
+import { markBookRead, markBookUnread } from '@/api/reader'
 import BookList from '@/components/library/BookList.vue'
 import LibraryViewSettingsPanel from '@/components/library/LibraryViewSettingsPanel.vue'
-import type { BookSummary, FavoriteCollection, LibraryViewSettings } from '@/api/tauri'
+import type { BookSummary, FavoriteCollection, FavoriteStatus, LibraryViewSettings, ReadingStatus, Repository } from '@/api/tauri'
 import type { BookSortKey, SortDirection } from '@/utils/bookSort'
+import { getReadingStatus } from '@/utils/readingStatus'
 
 const defaultViewSettings: LibraryViewSettings = {
   layout: 'grid',
@@ -64,7 +67,10 @@ const searchDebounceMs = 250
 
 type LibraryListState = {
   query: string
+  repositoryId: string | null
   selectedTags: string[]
+  readingStatus: ReadingStatus
+  favoriteStatus: FavoriteStatus
   sortKey: BookSortKey
   sortDirection: SortDirection
   pageSize: number
@@ -78,7 +84,10 @@ type LibraryScrollState = {
 
 const defaultLibraryState: LibraryListState = {
   query: '',
+  repositoryId: null,
   selectedTags: [],
+  readingStatus: 'all',
+  favoriteStatus: 'all',
   sortKey: 'createdAt',
   sortDirection: 'desc',
   pageSize: defaultPageSize,
@@ -97,11 +106,15 @@ const pageLoading = ref(false)
 const error = ref('')
 const query = ref(libraryState.query)
 const debouncedQuery = ref(libraryState.query)
+const selectedRepositoryId = ref<string | null>(libraryState.repositoryId)
 const selectedTags = ref<string[]>(libraryState.selectedTags)
+const readingStatus = ref<ReadingStatus>(libraryState.readingStatus)
+const favoriteStatus = ref<FavoriteStatus>(libraryState.favoriteStatus)
 const sortKey = ref<BookSortKey>(libraryState.sortKey)
 const sortDirection = ref<SortDirection>(libraryState.sortDirection)
 const currentPage = ref(libraryState.currentPage)
 const pageSize = ref(libraryState.pageSize)
+const repositories = ref<Repository[]>([])
 const allTags = ref<string[]>([])
 const showViewSettings = ref(false)
 const viewSettings = ref<LibraryViewSettings>({ ...defaultViewSettings })
@@ -134,13 +147,41 @@ const sortDirectionOptions: SelectOption[] = [
   { label: '升序', value: 'asc' },
 ]
 
+const readingStatusOptions: SelectOption[] = [
+  { label: '全部', value: 'all' },
+  { label: '未阅读', value: 'unread' },
+  { label: '阅读中', value: 'reading' },
+  { label: '已读完', value: 'read' },
+]
+
+const favoriteStatusOptions: SelectOption[] = [
+  { label: '全部收藏状态', value: 'all' },
+  { label: '已收藏', value: 'favorited' },
+  { label: '未收藏', value: 'notFavorited' },
+]
+
+const repositoryOptions = computed<SelectOption[]>(() => [
+  { label: '全部仓库', value: 'all' },
+  ...repositories.value.map((repository) => ({
+    label: repository.name,
+    value: repository.id,
+  })),
+])
 const tagOptions = computed<SelectOption[]>(() => allTags.value.map((tag) => ({ label: tag, value: tag })))
 const bookContextMenuOptions = computed(() => [
   { label: '重命名标题', key: 'rename' },
   { label: '恢复默认标题', key: 'reset', disabled: !contextMenuBook.value?.titleOverride },
+  { label: '标记已读', key: 'mark-read', disabled: !contextMenuBook.value || getReadingStatus(contextMenuBook.value) === 'read' },
+  { label: '标记未读', key: 'mark-unread', disabled: !contextMenuBook.value || getReadingStatus(contextMenuBook.value) === 'unread' },
 ])
 const pageCount = computed(() => Math.max(1, Math.ceil(totalBooks.value / pageSize.value)))
-const hasFilters = computed(() => Boolean(debouncedQuery.value.trim() || selectedTags.value.length))
+const hasFilters = computed(() => Boolean(
+  debouncedQuery.value.trim()
+    || selectedRepositoryId.value
+    || selectedTags.value.length
+    || readingStatus.value !== 'all'
+    || favoriteStatus.value !== 'all',
+))
 const shouldShowToolbar = computed(() => totalBooks.value > 0 || books.value.length > 0 || hasFilters.value)
 const visibleBooks = computed(() => books.value.slice(0, renderedBookCount.value))
 
@@ -149,10 +190,12 @@ async function loadInitialData() {
   error.value = ''
   let shouldRestoreScroll = false
   try {
-    const [nextSettings] = await Promise.all([
+    const [nextSettings, nextRepositories] = await Promise.all([
       getLibraryViewSettings(),
+      listRepositories(),
       loadBooks(),
     ])
+    repositories.value = nextRepositories
     viewSettings.value = { ...defaultViewSettings, ...nextSettings }
     initialized = true
     shouldRestoreScroll = true
@@ -168,7 +211,7 @@ async function loadInitialData() {
 async function loadDeferredLibraryData() {
   const [nextCollections, nextTags] = await Promise.all([
     listFavoriteCollections().catch(() => favoriteCollections.value),
-    listBookTags().catch(() => allTags.value),
+    listBookTags(selectedRepositoryId.value ?? undefined).catch(() => allTags.value),
   ])
   favoriteCollections.value = nextCollections
   allTags.value = nextTags
@@ -180,8 +223,11 @@ async function loadBooks() {
   error.value = ''
   try {
     const response = await listBooks({
+      repositoryId: selectedRepositoryId.value,
       query: debouncedQuery.value,
       tags: selectedTags.value,
+      readingStatus: readingStatus.value,
+      favoriteStatus: favoriteStatus.value,
       sortKey: sortKey.value,
       sortDirection: sortDirection.value,
       limit: pageSize.value,
@@ -260,11 +306,16 @@ function loadLibraryState(): LibraryListState {
     const legacyValue = value as Partial<LibraryListState> & { selectedTag?: unknown }
     return {
       query: typeof value.query === 'string' ? value.query : defaultLibraryState.query,
+      repositoryId: typeof value.repositoryId === 'string' && value.repositoryId
+        ? value.repositoryId
+        : defaultLibraryState.repositoryId,
       selectedTags: Array.isArray(value.selectedTags)
         ? value.selectedTags.filter((tag): tag is string => typeof tag === 'string')
         : typeof legacyValue.selectedTag === 'string' && legacyValue.selectedTag
           ? [legacyValue.selectedTag]
           : defaultLibraryState.selectedTags,
+      readingStatus: isReadingStatus(value.readingStatus) ? value.readingStatus : defaultLibraryState.readingStatus,
+      favoriteStatus: isFavoriteStatus(value.favoriteStatus) ? value.favoriteStatus : defaultLibraryState.favoriteStatus,
       sortKey: isBookSortKey(value.sortKey) ? value.sortKey : defaultLibraryState.sortKey,
       sortDirection: isSortDirection(value.sortDirection) ? value.sortDirection : defaultLibraryState.sortDirection,
       pageSize: isPageSize(value.pageSize) ? value.pageSize : defaultLibraryState.pageSize,
@@ -278,7 +329,10 @@ function loadLibraryState(): LibraryListState {
 function saveLibraryState() {
   window.localStorage.setItem(libraryStateKey, JSON.stringify({
     query: query.value,
+    repositoryId: selectedRepositoryId.value,
     selectedTags: selectedTags.value,
+    readingStatus: readingStatus.value,
+    favoriteStatus: favoriteStatus.value,
     sortKey: sortKey.value,
     sortDirection: sortDirection.value,
     pageSize: pageSize.value,
@@ -303,7 +357,10 @@ function getLibraryScrollTop() {
 function getLibraryScrollSignature() {
   return JSON.stringify({
     query: debouncedQuery.value,
+    repositoryId: selectedRepositoryId.value,
     selectedTags: selectedTags.value,
+    readingStatus: readingStatus.value,
+    favoriteStatus: favoriteStatus.value,
     sortKey: sortKey.value,
     sortDirection: sortDirection.value,
     pageSize: pageSize.value,
@@ -359,6 +416,14 @@ function isSortDirection(value: unknown): value is SortDirection {
   return value === 'asc' || value === 'desc'
 }
 
+function isReadingStatus(value: unknown): value is ReadingStatus {
+  return value === 'all' || value === 'unread' || value === 'reading' || value === 'read'
+}
+
+function isFavoriteStatus(value: unknown): value is FavoriteStatus {
+  return value === 'all' || value === 'favorited' || value === 'notFavorited'
+}
+
 function isPageSize(value: unknown): value is number {
   return pageSizeOptions.some((option) => option.value === value)
 }
@@ -369,6 +434,10 @@ function isPositiveInteger(value: unknown): value is number {
 
 function updateSelectedTags(value: string[] | null) {
   selectedTags.value = value ?? []
+}
+
+function updateSelectedRepository(value: string | null) {
+  selectedRepositoryId.value = value && value !== 'all' ? value : null
 }
 
 function selectCardTag(tag: string) {
@@ -397,6 +466,10 @@ function handleBookContextMenuSelect(key: string | number) {
     renameTitleValue.value = book.title
   } else if (key === 'reset') {
     void resetBookTitleFromMenu(book)
+  } else if (key === 'mark-read') {
+    void markBookReadFromMenu(book)
+  } else if (key === 'mark-unread') {
+    void markBookUnreadFromMenu(book)
   }
 }
 
@@ -444,6 +517,35 @@ async function resetBookTitleFromMenu(book: BookSummary) {
     message.success('已恢复默认标题')
   } catch (innerError) {
     error.value = String(innerError)
+  }
+}
+
+async function markBookReadFromMenu(book: BookSummary) {
+  error.value = ''
+  try {
+    const updated = await markBookRead(book.id)
+    await applyBookStatusUpdate(updated)
+    message.success('已标记为已读完')
+  } catch (innerError) {
+    error.value = String(innerError)
+  }
+}
+
+async function markBookUnreadFromMenu(book: BookSummary) {
+  error.value = ''
+  try {
+    const updated = await markBookUnread(book.id)
+    await applyBookStatusUpdate(updated)
+    message.success('已标记为未阅读')
+  } catch (innerError) {
+    error.value = String(innerError)
+  }
+}
+
+async function applyBookStatusUpdate(updated: BookSummary) {
+  replaceBook(updated)
+  if (readingStatus.value !== 'all' || favoriteStatus.value !== 'all') {
+    await loadBooks()
   }
 }
 
@@ -584,7 +686,16 @@ watch(query, () => {
   }, searchDebounceMs)
 })
 
-watch([selectedTags, sortKey, sortDirection, pageSize], () => {
+watch(selectedRepositoryId, async () => {
+  selectedTags.value = []
+  saveLibraryState()
+  allTags.value = await listBookTags(selectedRepositoryId.value ?? undefined).catch(() => [])
+  if (!initialized) return
+  currentPage.value = 1
+  void loadBooks()
+})
+
+watch([selectedTags, readingStatus, favoriteStatus, sortKey, sortDirection, pageSize], () => {
   saveLibraryState()
   if (!initialized) return
   currentPage.value = 1
@@ -652,6 +763,12 @@ function handleAutoScanComplete() {
         <NSpace align="center" :wrap="true">
           <NInput v-model:value="query" clearable placeholder="搜索标题、作者、标签" class="search-input" />
           <NSelect
+            :value="selectedRepositoryId ?? 'all'"
+            :options="repositoryOptions"
+            class="sort-select"
+            @update:value="updateSelectedRepository"
+          />
+          <NSelect
             :value="selectedTags"
             clearable
             filterable
@@ -662,6 +779,8 @@ function handleAutoScanComplete() {
             class="tag-select"
             @update:value="updateSelectedTags"
           />
+          <NSelect v-model:value="readingStatus" :options="readingStatusOptions" class="sort-select" />
+          <NSelect v-model:value="favoriteStatus" :options="favoriteStatusOptions" class="sort-select" />
           <NSelect v-model:value="sortKey" :options="sortKeyOptions" class="sort-select" />
           <NSelect v-model:value="sortDirection" :options="sortDirectionOptions" class="sort-select" />
           <NSelect v-model:value="pageSize" :options="pageSizeOptions" class="sort-select" />
@@ -687,6 +806,7 @@ function handleAutoScanComplete() {
         <BookList
           :books="visibleBooks"
           :settings="viewSettings"
+          :highlight-query="debouncedQuery"
           @open="openBook"
           @detail="openBookDetail"
           @toggle-favorite="toggleFavorite"

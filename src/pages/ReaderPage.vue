@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NButton, NDrawer, NDrawerContent, NEmpty, NPopover, NSelect, NSlider, NSpace, NSpin, NTag, NText, type SelectOption } from 'naive-ui'
+import { NAlert, NButton, NDrawer, NDrawerContent, NEmpty, NInputNumber, NPopover, NSelect, NSlider, NSpace, NSpin, NTag, NText, type SelectOption } from 'naive-ui'
 import { toArchiveUrl } from '@/api/archive'
 import { createBookmark, deleteBookmark, listBookmarks, type Bookmark } from '@/api/bookmark'
 import { getBook } from '@/api/library'
@@ -60,9 +60,11 @@ let pendingProgress: {
 // ── Bookmarks ──
 const bookmarks = ref<Bookmark[]>([])
 const showBookmarkDrawer = ref(false)
+const showChapterDrawer = ref(false)
 
 // ── Brightness/Contrast Quick Adjust ──
 const showFilterPopover = ref(false)
+const pageJumpValue = ref<number | null>(null)
 
 // ── Page Animation ──
 const pageDirection = ref<'forward' | 'backward'>('forward')
@@ -278,6 +280,7 @@ async function loadPagesForCurrentChapter() {
   }
   pages.value = await listChapterPages(chapter.id)
   pageIndex.value = Math.min(pageIndex.value, Math.max(pages.value.length - 1, 0))
+  pageJumpValue.value = pages.value.length ? pageIndex.value + 1 : null
   await nextTick()
 }
 
@@ -433,6 +436,23 @@ async function selectChapter(index: number) {
   chapterIndex.value = index
   pageIndex.value = 0
   await loadPagesForCurrentChapter()
+  scrollToCurrentPageSoon()
+}
+
+async function jumpToChapter(index: number) {
+  await selectChapter(index)
+  showChapterDrawer.value = false
+}
+
+function jumpToPage() {
+  if (!pages.value.length || !pageJumpValue.value) return
+  pageIndex.value = Math.min(Math.max(Math.round(pageJumpValue.value), 1), pages.value.length) - 1
+  scrollToCurrentPageSoon()
+}
+
+function jumpToChapterBoundary(target: 'first' | 'last') {
+  if (!pages.value.length) return
+  pageIndex.value = target === 'first' ? 0 : pages.value.length - 1
   scrollToCurrentPageSoon()
 }
 
@@ -685,6 +705,8 @@ function onReaderImageLoad(event: Event) {
 // ── Keyboard ──
 
 function onKeydown(event: KeyboardEvent) {
+  if (isEditableKeyboardTarget(event.target)) return
+
   // Zoom escape
   if (event.key === 'Escape' && isZoomed.value) {
     event.preventDefault()
@@ -711,6 +733,14 @@ function onKeydown(event: KeyboardEvent) {
     event.preventDefault()
     settings.value.direction === 'rtl' ? nextPage() : previousPage()
   }
+  if (event.key === 'Home') {
+    event.preventDefault()
+    jumpToChapterBoundary('first')
+  }
+  if (event.key === 'End') {
+    event.preventDefault()
+    jumpToChapterBoundary('last')
+  }
   if (event.key === 'Escape') {
     void leaveReader()
   }
@@ -725,7 +755,17 @@ function onKeyup(event: KeyboardEvent) {
   if (event.key === ' ') stopSpaceHold()
 }
 
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tagName = target.tagName.toLowerCase()
+  return tagName === 'input'
+    || tagName === 'textarea'
+    || tagName === 'select'
+    || target.isContentEditable
+}
+
 watch([chapterIndex, pageIndex], () => {
+  pageJumpValue.value = pages.value.length ? pageIndex.value + 1 : null
   queueProgressSave()
   preloadNearbyPages()
 })
@@ -774,6 +814,9 @@ onBeforeUnmount(() => {
         <NButton size="small" @click="showBookmarkDrawer = true">
           书签 ({{ bookmarks.length }})
         </NButton>
+        <NButton size="small" @click="showChapterDrawer = true">
+          目录
+        </NButton>
 
         <NPopover trigger="click" :show="showFilterPopover" @update:show="(v: boolean) => { showFilterPopover = v; if (!v) saveFilterSettings() }">
           <template #trigger>
@@ -803,6 +846,18 @@ onBeforeUnmount(() => {
           class="reader-chapter-select"
           @update:value="selectChapter"
         />
+        <NSpace align="center" size="small">
+          <NInputNumber
+            v-model:value="pageJumpValue"
+            size="small"
+            class="reader-page-input"
+            :min="1"
+            :max="Math.max(pages.length, 1)"
+            :show-button="false"
+            @keyup.enter="jumpToPage"
+          />
+          <NButton size="small" :disabled="!pages.length" @click="jumpToPage">跳页</NButton>
+        </NSpace>
         <NTag size="small" round>{{ pages.length ? pageIndex + 1 : 0 }} / {{ pages.length }}</NTag>
       </NSpace>
     </header>
@@ -915,6 +970,31 @@ onBeforeUnmount(() => {
         @mousedown.stop="onZoomMouseDown"
       />
     </div>
+
+    <!-- Chapter drawer -->
+    <NDrawer v-model:show="showChapterDrawer" :width="360" placement="right">
+      <NDrawerContent title="目录" closable>
+        <NEmpty v-if="!chapters.length" description="暂无章节" />
+        <div v-else class="bookmark-list">
+          <div
+            v-for="(chapter, index) in chapters"
+            :key="chapter.id"
+            class="bookmark-item"
+            :class="{ active: index === chapterIndex }"
+            role="button"
+            tabindex="0"
+            @click="jumpToChapter(index)"
+            @keydown.enter="jumpToChapter(index)"
+          >
+            <div class="bookmark-item-info">
+              <NText class="bookmark-item-title">{{ chapter.title }}</NText>
+              <NText depth="3" class="bookmark-item-time">{{ chapter.pageCount }} 页</NText>
+            </div>
+            <NTag v-if="index === chapterIndex" size="small" type="success" round>当前</NTag>
+          </div>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
 
     <!-- Bookmark drawer -->
     <NDrawer v-model:show="showBookmarkDrawer" :width="360" placement="right">

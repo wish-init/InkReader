@@ -12,6 +12,7 @@ const autoScanning = ref(false)
 const error = ref('')
 const scanProgress = ref<RepositoryScanProgress | null>(null)
 const scanResults = ref<RepositoryScanResult[]>([])
+const expandedScanResultKeys = ref<Set<string>>(new Set())
 const message = useMessage()
 let unlistenProgress: UnlistenFn | undefined
 
@@ -99,6 +100,44 @@ function scanSummaryMessage(result: RepositoryScanResult) {
   return `更新 ${scannedBooks} 本，跳过 ${unchangedBooks} 本，失败 ${failedEntries.length} 项`
 }
 
+function scanResultKey(result: RepositoryScanResult) {
+  return `${result.repository.path}-${result.repository.updatedAt}`
+}
+
+function isScanResultExpanded(result: RepositoryScanResult) {
+  return expandedScanResultKeys.value.has(scanResultKey(result))
+}
+
+function toggleScanResultDetails(result: RepositoryScanResult) {
+  const key = scanResultKey(result)
+  const nextKeys = new Set(expandedScanResultKeys.value)
+  if (nextKeys.has(key)) {
+    nextKeys.delete(key)
+  } else {
+    nextKeys.add(key)
+  }
+  expandedScanResultKeys.value = nextKeys
+}
+
+function hasScanDetails(result: RepositoryScanResult) {
+  return Boolean(
+    result.summary.skippedEntries.length
+      || result.summary.failedEntries.length
+      || result.summary.duplicateBooks.length,
+  )
+}
+
+function visibleScanEntries<T>(entries: T[], expanded: boolean) {
+  return expanded ? entries : entries.slice(0, 3)
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return '未扫描'
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return value
+  return date.toLocaleString('zh-CN')
+}
+
 function fileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
@@ -148,7 +187,7 @@ onBeforeUnmount(() => {
     </NAlert>
 
     <NSpace v-if="scanResults.length" vertical size="small" class="repository-list">
-      <NCard v-for="result in scanResults" :key="`${result.repository.path}-${result.repository.updatedAt}`" :bordered="false" class="toolbar-card">
+      <NCard v-for="result in scanResults" :key="scanResultKey(result)" :bordered="false" class="toolbar-card">
         <NSpace vertical size="small">
           <NSpace align="center" :wrap="true">
             <NText strong>{{ result.repository.name }}</NText>
@@ -160,15 +199,46 @@ onBeforeUnmount(() => {
             <NTag v-if="result.summary.duplicateBooks.length" size="small" type="warning" round>
               疑似重复 {{ result.summary.duplicateBooks.length }}
             </NTag>
+            <NButton
+              v-if="hasScanDetails(result)"
+              size="tiny"
+              secondary
+              @click="toggleScanResultDetails(result)"
+            >
+              {{ isScanResultExpanded(result) ? '收起明细' : '查看明细' }}
+            </NButton>
           </NSpace>
-          <NText v-if="result.summary.skippedEntries.length" depth="3">
-            跳过：{{ result.summary.skippedEntries.slice(0, 3).map((item) => `${fileName(item.path)}（${item.reason}）`).join('，') }}
-          </NText>
+          <div v-if="result.summary.skippedEntries.length" class="scan-detail-block">
+            <NText strong depth="3">跳过</NText>
+            <NText
+              v-for="item in visibleScanEntries(result.summary.skippedEntries, isScanResultExpanded(result))"
+              :key="`${item.path}-${item.reason}`"
+              depth="3"
+            >
+              {{ fileName(item.path) }}：{{ item.reason }}
+            </NText>
+          </div>
           <NAlert v-if="result.summary.failedEntries.length" type="warning" :show-icon="false">
-            {{ result.summary.failedEntries.slice(0, 3).map((item) => `${fileName(item.path)}：${item.reason}`).join('；') }}
+            <NSpace vertical size="small">
+              <NText strong>失败</NText>
+              <NText
+                v-for="item in visibleScanEntries(result.summary.failedEntries, isScanResultExpanded(result))"
+                :key="`${item.path}-${item.reason}`"
+              >
+                {{ fileName(item.path) }}：{{ item.reason }}
+              </NText>
+            </NSpace>
           </NAlert>
           <NAlert v-if="result.summary.duplicateBooks.length" type="info" :show-icon="false">
-            {{ result.summary.duplicateBooks.slice(0, 3).map((item) => `${item.title}：${fileName(item.path)} 与 ${fileName(item.duplicateOf)}`).join('；') }}
+            <NSpace vertical size="small">
+              <NText strong>疑似重复</NText>
+              <NText
+                v-for="item in visibleScanEntries(result.summary.duplicateBooks, isScanResultExpanded(result))"
+                :key="`${item.path}-${item.duplicateOf}`"
+              >
+                {{ item.title }}：{{ fileName(item.path) }} 与 {{ fileName(item.duplicateOf) }}
+              </NText>
+            </NSpace>
           </NAlert>
         </NSpace>
       </NCard>
@@ -183,7 +253,7 @@ onBeforeUnmount(() => {
           </div>
           <NSpace align="center" :wrap="true">
             <NTag round>{{ repository.bookCount }} 本漫画</NTag>
-            <NText depth="3">{{ repository.lastScannedAt || '未扫描' }}</NText>
+            <NText depth="3">最近扫描：{{ formatDateTime(repository.lastScannedAt) }}</NText>
             <NButton :disabled="loading || autoScanning" @click="rescan(repository)">重新扫描</NButton>
             <NPopconfirm @positive-click="remove(repository)">
               <template #trigger>

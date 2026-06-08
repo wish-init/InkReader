@@ -49,6 +49,7 @@ export type BookSummary = {
   lastChapterId?: string
   lastPage: number
   lastReadAt?: string
+  isReadComplete: boolean
   isFavorite: boolean
   createdAt: string
   updatedAt: string
@@ -56,6 +57,8 @@ export type BookSummary = {
 
 export type BookSortKey = 'title' | 'totalPages' | 'createdAt' | 'lastReadAt'
 export type SortDirection = 'asc' | 'desc'
+export type ReadingStatus = 'all' | 'unread' | 'reading' | 'read'
+export type FavoriteStatus = 'all' | 'favorited' | 'notFavorited'
 
 export type BookListRequest = {
   repositoryId?: string | null
@@ -63,6 +66,8 @@ export type BookListRequest = {
   query?: string | null
   tag?: string | null
   tags?: string[] | null
+  readingStatus?: ReadingStatus | null
+  favoriteStatus?: FavoriteStatus | null
   sortKey?: BookSortKey
   sortDirection?: SortDirection
   limit?: number
@@ -72,6 +77,14 @@ export type BookListRequest = {
 export type BookListResponse = {
   books: BookSummary[]
   total: number
+}
+
+export type UpdateBookMetadataRequest = {
+  bookPath: string
+  title: string
+  description?: string | null
+  authors: string[]
+  tags: string[]
 }
 
 export type BookThumbnail = {

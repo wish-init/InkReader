@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::{
     errors::AppResult,
-    models::{history::ReadingHistoryRecord, page::Page},
+    models::{book::Book, history::ReadingHistoryRecord, page::Page},
     AppState,
 };
 
@@ -19,6 +19,16 @@ pub fn update_book_progress(
     page: usize,
 ) -> AppResult<()> {
     state.database.update_progress(&book_id, &chapter_id, page)
+}
+
+#[tauri::command]
+pub fn mark_book_read(state: State<'_, AppState>, book_id: String) -> AppResult<Book> {
+    state.database.mark_book_read(&book_id)
+}
+
+#[tauri::command]
+pub fn mark_book_unread(state: State<'_, AppState>, book_id: String) -> AppResult<Book> {
+    state.database.mark_book_unread(&book_id)
 }
 
 #[tauri::command]

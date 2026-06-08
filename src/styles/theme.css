@@ -165,6 +165,11 @@
   margin-top: 4px;
 }
 
+.scan-detail-block {
+  display: grid;
+  gap: 4px;
+}
+
 .repository-card-content {
   display: flex;
   align-items: center;
@@ -362,6 +367,13 @@
 
 .book-meta {
   font-size: 13px;
+}
+
+.search-highlight {
+  border-radius: 3px;
+  background: rgb(250 204 21 / 35%);
+  color: inherit;
+  padding: 0 2px;
 }
 
 .book-progress {
@@ -614,6 +626,10 @@
   width: min(260px, 32vw);
 }
 
+.reader-page-input {
+  width: 72px;
+}
+
 .reader-viewport {
   position: relative;
   display: grid;
@@ -734,6 +750,10 @@
 
 .bookmark-item:hover {
   background: rgb(47 111 78 / 8%);
+}
+
+.bookmark-item.active {
+  background: rgb(47 111 78 / 12%);
 }
 
 .bookmark-item-info {

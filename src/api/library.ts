@@ -6,6 +6,7 @@ import {
   type BookThumbnail,
   type Chapter,
   type FavoriteCollection,
+  type UpdateBookMetadataRequest,
 } from './tauri'
 
 export function listBooks(request: BookListRequest = {}): Promise<BookListResponse> {
@@ -31,6 +32,8 @@ function normalizeBookListRequest(request: BookListRequest): BookListRequest {
     query: request.query ?? null,
     tag: request.tag ?? null,
     tags: request.tags ?? null,
+    readingStatus: request.readingStatus ?? 'all',
+    favoriteStatus: request.favoriteStatus ?? 'all',
     sortKey: request.sortKey ?? 'createdAt',
     sortDirection: request.sortDirection ?? 'desc',
     limit: request.limit ?? 80,
@@ -96,6 +99,10 @@ export function renameBookTitle(bookPath: string, title: string): Promise<Book> 
 
 export function resetBookTitle(bookPath: string): Promise<Book> {
   return call('reset_book_title', { bookPath })
+}
+
+export function updateBookMetadata(request: UpdateBookMetadataRequest): Promise<Book> {
+  return call('update_book_metadata', { request })
 }
 
 export function getBook(bookId: string): Promise<Book> {

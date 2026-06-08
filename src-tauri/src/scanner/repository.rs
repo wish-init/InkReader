@@ -455,6 +455,7 @@ fn scan_archive_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult
         last_chapter_id: chapters.first().map(|c| c.id.clone()),
         last_page: 0,
         last_read_at: None,
+        is_read_complete: false,
         is_favorite: false,
         created_at: now.to_string(),
         updated_at: now.to_string(),
@@ -558,6 +559,7 @@ fn scan_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult<Option<
         last_chapter_id: chapters.first().map(|chapter| chapter.id.clone()),
         last_page: 0,
         last_read_at: None,
+        is_read_complete: false,
         is_favorite: false,
         created_at: now.to_string(),
         updated_at: now.to_string(),
@@ -725,7 +727,7 @@ fn scan_image_pages(directory_path: &Path, excluded_path: Option<&Path>) -> AppR
     let mut image_paths = readable_entries(directory_path)
         .map(|entry| entry.path())
         .filter(|path| path.is_file() && is_supported_image(path))
-        .filter(|path| excluded_path.map_or(true, |excluded| path != excluded))
+        .filter(|path| excluded_path.is_none_or(|excluded| path != excluded))
         .collect::<Vec<_>>();
 
     image_paths.sort_by(|a, b| {
@@ -778,7 +780,7 @@ fn readable_entries(path: &Path) -> impl Iterator<Item = fs::DirEntry> {
         .flat_map(|entries| entries.filter_map(Result::ok))
 }
 
-fn sort_chapters(chapters: &mut Vec<Chapter>) {
+fn sort_chapters(chapters: &mut [Chapter]) {
     chapters.sort_by(|a, b| match (a.order == i64::MAX, b.order == i64::MAX) {
         (false, false) => a.order.cmp(&b.order),
         (false, true) => std::cmp::Ordering::Less,

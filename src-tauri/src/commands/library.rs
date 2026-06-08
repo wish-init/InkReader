@@ -3,7 +3,7 @@ use tauri::State;
 use crate::{
     errors::AppResult,
     models::{
-        book::{Book, BookListRequest, BookListResponse, BookThumbnail},
+        book::{Book, BookListRequest, BookListResponse, BookThumbnail, UpdateBookMetadataRequest},
         chapter::Chapter,
         favorite::FavoriteCollection,
     },
@@ -171,6 +171,14 @@ pub fn rename_book_title(
 #[tauri::command]
 pub fn reset_book_title(state: State<'_, AppState>, book_path: String) -> AppResult<Book> {
     state.database.reset_book_title(&book_path)
+}
+
+#[tauri::command]
+pub fn update_book_metadata(
+    state: State<'_, AppState>,
+    request: UpdateBookMetadataRequest,
+) -> AppResult<Book> {
+    state.database.update_book_metadata(request)
 }
 
 #[tauri::command]

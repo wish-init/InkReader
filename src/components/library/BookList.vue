@@ -5,6 +5,7 @@ import type { BookSummary, LibraryViewSettings } from '@/api/tauri'
 const props = withDefaults(defineProps<{
   books: BookSummary[]
   settings: LibraryViewSettings
+  highlightQuery?: string
   selectable?: boolean
   selectedBookPaths?: Set<string>
 }>(), {
@@ -29,6 +30,7 @@ const emit = defineEmits<{
       :key="book.id"
       :book="book"
       :settings="props.settings"
+      :highlight-query="props.highlightQuery"
       :favorite-button-label="book.isFavorite ? `管理收藏夹 ${book.title}` : `选择收藏夹 ${book.title}`"
       :selectable="props.selectable"
       :selected="props.selectedBookPaths.has(book.path)"

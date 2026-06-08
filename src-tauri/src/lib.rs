@@ -146,7 +146,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let database = Database::new(&app.handle())?;
+            let database = Database::new(app.handle())?;
             app.manage(AppState {
                 database: std::sync::Arc::new(database),
                 archive_cache: std::sync::Arc::new(Mutex::new(ArchiveCache::new(64))),
@@ -181,10 +181,13 @@ pub fn run() {
             commands::library::set_book_favorite,
             commands::library::rename_book_title,
             commands::library::reset_book_title,
+            commands::library::update_book_metadata,
             commands::library::get_book,
             commands::library::list_book_chapters,
             commands::reader::list_chapter_pages,
             commands::reader::update_book_progress,
+            commands::reader::mark_book_read,
+            commands::reader::mark_book_unread,
             commands::reader::list_reading_history,
             commands::settings::ping,
             commands::settings::get_reader_settings,

@@ -22,6 +22,7 @@ pub struct BookSummary {
     pub last_chapter_id: Option<String>,
     pub last_page: usize,
     pub last_read_at: Option<String>,
+    pub is_read_complete: bool,
     pub is_favorite: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -35,6 +36,8 @@ pub struct BookListRequest {
     pub query: Option<String>,
     pub tag: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub reading_status: Option<String>,
+    pub favorite_status: Option<String>,
     pub sort_key: Option<String>,
     pub sort_direction: Option<String>,
     pub limit: Option<usize>,
@@ -46,6 +49,16 @@ pub struct BookListRequest {
 pub struct BookListResponse {
     pub books: Vec<BookSummary>,
     pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBookMetadataRequest {
+    pub book_path: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub authors: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +90,7 @@ pub struct Book {
     pub last_chapter_id: Option<String>,
     pub last_page: usize,
     pub last_read_at: Option<String>,
+    pub is_read_complete: bool,
     pub is_favorite: bool,
     pub created_at: String,
     pub updated_at: String,

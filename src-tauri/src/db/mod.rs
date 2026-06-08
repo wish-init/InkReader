@@ -10,6 +10,7 @@ use tauri::Manager;
 use crate::{
     errors::{AppError, AppResult},
     models::{
+        book::UpdateBookMetadataRequest,
         book::{Book, BookListRequest, BookListResponse, BookSummary, BookThumbnail},
         chapter::Chapter,
         favorite::FavoriteCollection,
@@ -485,7 +486,10 @@ impl Database {
         };
 
         for path in existing_paths {
-            if !current_paths.contains(&path) || changed_paths.contains(&path) {
+            if !current_paths.contains(&path) {
+                delete_book_external_records_by_path(&transaction, &path)?;
+                delete_book_records_by_path(&transaction, &path)?;
+            } else if changed_paths.contains(&path) {
                 delete_book_records_by_path(&transaction, &path)?;
             }
         }
@@ -668,10 +672,11 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT favorite_collections.id, favorite_collections.name,
-                    COUNT(favorite_collection_books.book_path) AS book_count,
+                    COUNT(favorite_books.id) AS book_count,
                     favorite_collections.is_default, favorite_collections.created_at, favorite_collections.updated_at
              FROM favorite_collections
              LEFT JOIN favorite_collection_books ON favorite_collection_books.collection_id = favorite_collections.id
+             LEFT JOIN books AS favorite_books ON favorite_books.path = favorite_collection_books.book_path
              GROUP BY favorite_collections.id
              ORDER BY favorite_collections.is_default DESC, favorite_collections.created_at ASC",
         )?;
@@ -837,10 +842,11 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT favorite_collections.id, favorite_collections.name,
-                    COUNT(favorite_collection_books.book_path) AS book_count,
+                    COUNT(favorite_books.id) AS book_count,
                     favorite_collections.is_default, favorite_collections.created_at, favorite_collections.updated_at
              FROM favorite_collections
              INNER JOIN favorite_collection_books ON favorite_collection_books.collection_id = favorite_collections.id
+             LEFT JOIN books AS favorite_books ON favorite_books.path = favorite_collection_books.book_path
              WHERE favorite_collection_books.book_path = ?1
              GROUP BY favorite_collections.id
              ORDER BY favorite_collections.is_default DESC, favorite_collections.created_at ASC",
@@ -853,10 +859,11 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT favorite_collections.id, favorite_collections.name,
-                    COUNT(favorite_collection_books.book_path) AS book_count,
+                    COUNT(favorite_books.id) AS book_count,
                     favorite_collections.is_default, favorite_collections.created_at, favorite_collections.updated_at
              FROM favorite_collections
              LEFT JOIN favorite_collection_books ON favorite_collection_books.collection_id = favorite_collections.id
+             LEFT JOIN books AS favorite_books ON favorite_books.path = favorite_collection_books.book_path
              WHERE favorite_collections.id = ?1
              GROUP BY favorite_collections.id",
         )?;
@@ -903,6 +910,67 @@ impl Database {
             params![book_path],
         )?;
         self.get_book_by_path(book_path)
+    }
+
+    pub fn update_book_metadata(&self, request: UpdateBookMetadataRequest) -> AppResult<Book> {
+        let trimmed_title = request.title.trim();
+        if trimmed_title.is_empty() {
+            return Err(AppError::Database("漫画标题不能为空".to_string()));
+        }
+
+        let description = request
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let authors = request
+            .authors
+            .iter()
+            .map(|author| author.trim())
+            .filter(|author| !author.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let tags = normalize_tags(&request.tags);
+        let authors_json = serde_json::to_string(&authors)?;
+        let tags_json = serde_json::to_string(&tags)?;
+
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let book_id = transaction.query_row(
+            "SELECT id FROM books WHERE path = ?1",
+            params![&request.book_path],
+            |row| row.get::<_, String>(0),
+        )?;
+        transaction.execute(
+            "UPDATE books
+             SET title = ?1,
+                 title_override = ?1,
+                 description = ?2,
+                 authors_json = ?3,
+                 tags_json = ?4,
+                 updated_at = datetime('now')
+             WHERE path = ?5",
+            params![
+                trimmed_title,
+                description.as_deref(),
+                &authors_json,
+                &tags_json,
+                &request.book_path,
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM book_tags WHERE book_id = ?1",
+            params![&book_id],
+        )?;
+        for tag in tags {
+            transaction.execute(
+                "INSERT OR IGNORE INTO book_tags (book_id, tag) VALUES (?1, ?2)",
+                params![&book_id, &tag],
+            )?;
+        }
+        transaction.commit()?;
+        self.get_book_by_path(&request.book_path)
     }
 
     pub fn get_book(&self, book_id: &str) -> AppResult<Book> {
@@ -992,6 +1060,43 @@ impl Database {
             params![uuid::Uuid::new_v4().to_string(), book_path, chapter_path, chapter_title, page as i64, now],
         )?;
         Ok(())
+    }
+
+    pub fn mark_book_read(&self, book_id: &str) -> AppResult<Book> {
+        let connection = self.connect()?;
+        let sql = format!(
+            "SELECT id, page_count
+             FROM chapters
+             WHERE book_id = ?1
+             {FINAL_CHAPTER_ORDER_SQL}
+             LIMIT 1"
+        );
+        let (chapter_id, page_count) =
+            connection.query_row(sql.as_str(), params![book_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?;
+        self.update_progress(book_id, &chapter_id, page_count.saturating_sub(1))?;
+        self.get_book(book_id)
+    }
+
+    pub fn mark_book_unread(&self, book_id: &str) -> AppResult<Book> {
+        let connection = self.connect()?;
+        let book_path = connection.query_row(
+            "SELECT path FROM books WHERE id = ?1",
+            params![book_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        connection.execute(
+            "UPDATE books
+             SET last_chapter_id = NULL, last_page = 0, last_read_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![book_id],
+        )?;
+        connection.execute(
+            "DELETE FROM reading_history WHERE book_path = ?1",
+            params![book_path],
+        )?;
+        self.get_book(book_id)
     }
 
     pub fn list_reading_history(&self) -> AppResult<Vec<ReadingHistoryRecord>> {
@@ -1090,6 +1195,7 @@ impl Database {
     pub fn remove_repository(&self, repository_id: &str) -> AppResult<()> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
+        delete_repository_external_records(&transaction, repository_id)?;
         delete_repository_records(&transaction, repository_id)?;
         transaction.commit()?;
         Ok(())
@@ -1317,9 +1423,46 @@ fn delete_book_records_by_path(
     Ok(())
 }
 
+fn delete_repository_external_records(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM favorite_books WHERE book_path IN (SELECT path FROM books WHERE repository_id = ?1)",
+        params![repository_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM favorite_collection_books WHERE book_path IN (SELECT path FROM books WHERE repository_id = ?1)",
+        params![repository_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM reading_history WHERE book_path IN (SELECT path FROM books WHERE repository_id = ?1)",
+        params![repository_id],
+    )?;
+    Ok(())
+}
+
+fn delete_book_external_records_by_path(
+    transaction: &rusqlite::Transaction<'_>,
+    book_path: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM favorite_books WHERE book_path = ?1",
+        params![book_path],
+    )?;
+    transaction.execute(
+        "DELETE FROM favorite_collection_books WHERE book_path = ?1",
+        params![book_path],
+    )?;
+    transaction.execute(
+        "DELETE FROM reading_history WHERE book_path = ?1",
+        params![book_path],
+    )?;
+    Ok(())
+}
+
 fn sql_placeholders(count: usize) -> String {
-    std::iter::repeat("?")
-        .take(count)
+    std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -1589,16 +1732,40 @@ fn backfill_book_tags(connection: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn book_summary_select_sql() -> &'static str {
-    "SELECT id, repository_id, source_id, title,
+const FINAL_CHAPTER_ORDER_SQL: &str =
+    "ORDER BY order_index DESC, title COLLATE NOCASE DESC, id DESC";
+
+fn read_complete_exists_sql() -> String {
+    "EXISTS (
+      SELECT 1 FROM chapters
+      WHERE chapters.book_id = books.id
+        AND chapters.id = books.last_chapter_id
+        AND books.last_page + 1 >= chapters.page_count
+        AND chapters.id = (
+          SELECT last_chapter.id
+          FROM chapters AS last_chapter
+          WHERE last_chapter.book_id = books.id
+          ORDER BY last_chapter.order_index DESC, last_chapter.title COLLATE NOCASE DESC, last_chapter.id DESC
+          LIMIT 1
+        )
+    )"
+    .to_string()
+}
+
+fn book_summary_select_sql() -> String {
+    format!(
+        "SELECT id, repository_id, source_id, title,
             COALESCE(NULLIF(scanned_title, ''), title) AS scanned_title,
             title_override,
             path, kind, metadata_path, cover_path,
             thumbnail_path, description, authors_json, tags_json, chapter_count, total_pages,
             last_chapter_id, last_page,
             EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path) AS is_favorite,
+            {} AS is_read_complete,
             created_at, updated_at, last_read_at
-     FROM books"
+     FROM books",
+        read_complete_exists_sql()
+    )
 }
 
 fn book_select_sql(where_clause: &str) -> String {
@@ -1621,7 +1788,7 @@ fn build_book_list_filters(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        filters.push("books.repository_id = ?");
+        filters.push("books.repository_id = ?".to_string());
         values.push(Value::Text(repository_id.to_string()));
     }
 
@@ -1632,10 +1799,10 @@ fn build_book_list_filters(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            filters.push("EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path AND favorite_collection_books.collection_id = ?)");
+            filters.push("EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path AND favorite_collection_books.collection_id = ?)".to_string());
             values.push(Value::Text(collection_id.to_string()));
         } else {
-            filters.push("EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path)");
+            filters.push("EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path)".to_string());
         }
     }
 
@@ -1645,7 +1812,7 @@ fn build_book_list_filters(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        filters.push("(LOWER(books.title) LIKE ? ESCAPE '\\' OR LOWER(books.authors_json) LIKE ? ESCAPE '\\' OR LOWER(books.tags_json) LIKE ? ESCAPE '\\')");
+        filters.push("(LOWER(books.title) LIKE ? ESCAPE '\\' OR LOWER(books.authors_json) LIKE ? ESCAPE '\\' OR LOWER(books.tags_json) LIKE ? ESCAPE '\\')".to_string());
         let pattern = format!("%{}%", escape_like_pattern(&query.to_lowercase()));
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern.clone()));
@@ -1676,8 +1843,43 @@ fn build_book_list_filters(
     }
 
     for tag in selected_tags {
-        filters.push("EXISTS (SELECT 1 FROM book_tags WHERE book_tags.book_id = books.id AND book_tags.tag = ?)");
+        filters.push("EXISTS (SELECT 1 FROM book_tags WHERE book_tags.book_id = books.id AND book_tags.tag = ?)".to_string());
         values.push(Value::Text(tag));
+    }
+
+    if let Some(reading_status) = request
+        .reading_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+    {
+        match reading_status {
+            "reading" => filters.push(format!(
+                "(books.last_read_at IS NOT NULL OR books.last_page > 0) AND NOT {}",
+                read_complete_exists_sql()
+            )),
+            "read" => filters.push(format!(
+                "(books.last_read_at IS NOT NULL OR books.last_page > 0) AND {}",
+                read_complete_exists_sql()
+            )),
+            "unread" => {
+                filters.push("(books.last_read_at IS NULL AND books.last_page = 0)".to_string())
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(favorite_status) = request
+        .favorite_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+    {
+        match favorite_status {
+            "favorited" => filters.push("EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path)".to_string()),
+            "notFavorited" => filters.push("NOT EXISTS (SELECT 1 FROM favorite_collection_books WHERE favorite_collection_books.book_path = books.path)".to_string()),
+            _ => {}
+        }
     }
 
     if filters.is_empty() {
@@ -1735,9 +1937,10 @@ fn map_book_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookSummary
         last_chapter_id: row.get(16)?,
         last_page: row.get::<_, i64>(17)? as usize,
         is_favorite: row.get::<_, i64>(18)? != 0,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        last_read_at: row.get(21)?,
+        is_read_complete: row.get::<_, i64>(19)? != 0,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
+        last_read_at: row.get(22)?,
     })
 }
 
@@ -1763,6 +1966,7 @@ fn map_book_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         last_chapter_id: summary.last_chapter_id,
         last_page: summary.last_page,
         last_read_at: summary.last_read_at,
+        is_read_complete: summary.is_read_complete,
         is_favorite: summary.is_favorite,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
@@ -1852,6 +2056,7 @@ mod tests {
             last_chapter_id: None,
             last_page: 0,
             last_read_at: None,
+            is_read_complete: false,
             is_favorite: false,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
@@ -1860,24 +2065,320 @@ mod tests {
         }
     }
 
+    fn book_with_chapters(repository_id: &str, path: &str, title: &str) -> Book {
+        let mut next_book = book(repository_id, path, title);
+        let first_chapter_id = uuid::Uuid::new_v4().to_string();
+        let second_chapter_id = uuid::Uuid::new_v4().to_string();
+        next_book.chapter_count = 2;
+        next_book.total_pages = 5;
+        next_book.last_chapter_id = Some(first_chapter_id.clone());
+        next_book.chapters = vec![
+            Chapter {
+                id: first_chapter_id,
+                book_id: next_book.id.clone(),
+                source_chapter_id: None,
+                title: "Chapter 1".to_string(),
+                path: format!("{path}/chapter-1"),
+                order: 1,
+                page_count: 2,
+                pages: Vec::new(),
+            },
+            Chapter {
+                id: second_chapter_id,
+                book_id: next_book.id.clone(),
+                source_chapter_id: None,
+                title: "Chapter 2".to_string(),
+                path: format!("{path}/chapter-2"),
+                order: 2,
+                page_count: 3,
+                pages: Vec::new(),
+            },
+        ];
+        next_book
+    }
+
+    fn book_list_request() -> BookListRequest {
+        BookListRequest {
+            repository_id: None,
+            collection_id: None,
+            query: None,
+            tag: None,
+            tags: None,
+            reading_status: None,
+            favorite_status: None,
+            sort_key: None,
+            sort_direction: None,
+            limit: None,
+            offset: None,
+        }
+    }
+
     fn list_first_book(database: &Database) -> BookSummary {
         database
-            .list_books(BookListRequest {
-                repository_id: None,
-                collection_id: None,
-                query: None,
-                tag: None,
-                tags: None,
-                sort_key: None,
-                sort_direction: None,
-                limit: None,
-                offset: None,
-            })
+            .list_books(book_list_request())
             .unwrap()
             .books
             .into_iter()
             .next()
             .unwrap()
+    }
+
+    #[test]
+    fn list_books_filters_by_reading_status() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let mut read_book = book_with_chapters(&repo.id, "F:/repo/read-book", "Read Book");
+        read_book.last_chapter_id = Some(read_book.chapters[1].id.clone());
+        read_book.last_page = 2;
+        read_book.last_read_at = Some("2026-01-02T00:00:00Z".to_string());
+        let mut reading_book = book_with_chapters(&repo.id, "F:/repo/reading-book", "Reading Book");
+        reading_book.last_chapter_id = Some(reading_book.chapters[0].id.clone());
+        reading_book.last_page = 1;
+        reading_book.last_read_at = Some("2026-01-02T00:00:00Z".to_string());
+        let unread_book = book_with_chapters(&repo.id, "F:/repo/unread-book", "Unread Book");
+        temp.database
+            .upsert_scan(&repo, &[read_book, reading_book, unread_book])
+            .unwrap();
+
+        let mut read_request = book_list_request();
+        read_request.reading_status = Some("read".to_string());
+        let read_titles = temp
+            .database
+            .list_books(read_request)
+            .unwrap()
+            .books
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>();
+        assert_eq!(read_titles, vec!["Read Book"]);
+
+        let mut reading_request = book_list_request();
+        reading_request.reading_status = Some("reading".to_string());
+        let reading_titles = temp
+            .database
+            .list_books(reading_request)
+            .unwrap()
+            .books
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>();
+        assert_eq!(reading_titles, vec!["Reading Book"]);
+
+        let mut unread_request = book_list_request();
+        unread_request.reading_status = Some("unread".to_string());
+        let unread_titles = temp
+            .database
+            .list_books(unread_request)
+            .unwrap()
+            .books
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>();
+        assert_eq!(unread_titles, vec!["Unread Book"]);
+    }
+
+    #[test]
+    fn list_books_filters_by_favorite_status() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let favorited_path = "F:/repo/favorited-book";
+        let plain_path = "F:/repo/plain-book";
+        temp.database
+            .upsert_scan(
+                &repo,
+                &[
+                    book(&repo.id, favorited_path, "Favorited Book"),
+                    book(&repo.id, plain_path, "Plain Book"),
+                ],
+            )
+            .unwrap();
+        temp.database
+            .add_book_to_favorite_collection(favorited_path, "default")
+            .unwrap();
+
+        let mut favorited_request = book_list_request();
+        favorited_request.favorite_status = Some("favorited".to_string());
+        let favorited_titles = temp
+            .database
+            .list_books(favorited_request)
+            .unwrap()
+            .books
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>();
+        assert_eq!(favorited_titles, vec!["Favorited Book"]);
+
+        let mut not_favorited_request = book_list_request();
+        not_favorited_request.favorite_status = Some("notFavorited".to_string());
+        let not_favorited_titles = temp
+            .database
+            .list_books(not_favorited_request)
+            .unwrap()
+            .books
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>();
+        assert_eq!(not_favorited_titles, vec!["Plain Book"]);
+    }
+
+    #[test]
+    fn mark_book_read_and_unread_updates_progress_and_history() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let source_book = book_with_chapters(&repo.id, "F:/repo/progress-book", "Progress Book");
+        let book_id = source_book.id.clone();
+        temp.database.upsert_scan(&repo, &[source_book]).unwrap();
+
+        let read_book = temp.database.mark_book_read(&book_id).unwrap();
+        assert_eq!(read_book.last_page, 2);
+        assert!(read_book.last_read_at.is_some());
+        assert!(read_book.is_read_complete);
+        assert_eq!(
+            read_book.last_chapter_id.as_deref(),
+            Some(read_book.chapters[1].id.as_str())
+        );
+        assert_eq!(temp.database.list_reading_history().unwrap().len(), 1);
+
+        let unread_book = temp.database.mark_book_unread(&book_id).unwrap();
+        assert_eq!(unread_book.last_page, 0);
+        assert!(unread_book.last_read_at.is_none());
+        assert!(!unread_book.is_read_complete);
+        assert!(unread_book.last_chapter_id.is_none());
+        assert!(temp.database.list_reading_history().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_repository_cleans_path_based_favorites_and_history() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let source_book = book_with_chapters(&repo.id, "F:/repo/cleanup-book", "Cleanup Book");
+        let book_id = source_book.id.clone();
+        let chapter_id = source_book.chapters[0].id.clone();
+        let book_path = source_book.path.clone();
+        temp.database.upsert_scan(&repo, &[source_book]).unwrap();
+        temp.database
+            .add_book_to_favorite_collection(&book_path, "default")
+            .unwrap();
+        temp.database
+            .update_progress(&book_id, &chapter_id, 1)
+            .unwrap();
+
+        temp.database.remove_repository(&repo.id).unwrap();
+
+        let collections = temp.database.list_favorite_collections().unwrap();
+        assert_eq!(collections[0].book_count, 0);
+        assert_path_row_count(&temp.database, "favorite_books", &book_path, 0);
+        assert_path_row_count(&temp.database, "favorite_collection_books", &book_path, 0);
+        assert_path_row_count(&temp.database, "reading_history", &book_path, 0);
+    }
+
+    #[test]
+    fn rescan_preserves_path_based_favorites_and_history_for_existing_books() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let source_book = book_with_chapters(&repo.id, "F:/repo/rescan-book", "Rescan Book");
+        let book_id = source_book.id.clone();
+        let chapter_id = source_book.chapters[0].id.clone();
+        let book_path = source_book.path.clone();
+        temp.database
+            .upsert_scan(&repo, std::slice::from_ref(&source_book))
+            .unwrap();
+        temp.database
+            .add_book_to_favorite_collection(&book_path, "default")
+            .unwrap();
+        temp.database
+            .update_progress(&book_id, &chapter_id, 1)
+            .unwrap();
+
+        temp.database.upsert_scan(&repo, &[source_book]).unwrap();
+
+        let collections = temp.database.list_favorite_collections().unwrap();
+        assert_eq!(collections[0].book_count, 1);
+        assert_eq!(temp.database.list_reading_history().unwrap().len(), 1);
+        assert_path_row_count(&temp.database, "favorite_books", &book_path, 1);
+        assert_path_row_count(&temp.database, "favorite_collection_books", &book_path, 1);
+        assert_path_row_count(&temp.database, "reading_history", &book_path, 1);
+    }
+
+    #[test]
+    fn read_complete_uses_deterministic_final_chapter_when_order_ties() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let mut source_book =
+            book_with_chapters(&repo.id, "F:/repo/tied-order-book", "Tied Order Book");
+        source_book.chapters[0].title = "A Chapter".to_string();
+        source_book.chapters[1].title = "Z Chapter".to_string();
+        source_book.chapters[0].order = 2;
+        source_book.chapters[1].order = 2;
+        let book_id = source_book.id.clone();
+        let first_chapter_id = source_book.chapters[0].id.clone();
+        let second_chapter_id = source_book.chapters[1].id.clone();
+        temp.database.upsert_scan(&repo, &[source_book]).unwrap();
+
+        temp.database
+            .update_progress(&book_id, &first_chapter_id, 1)
+            .unwrap();
+        let reading_book = temp.database.get_book(&book_id).unwrap();
+        assert!(!reading_book.is_read_complete);
+
+        let mut reading_request = book_list_request();
+        reading_request.reading_status = Some("reading".to_string());
+        assert_eq!(
+            temp.database.list_books(reading_request).unwrap().books[0].title,
+            "Tied Order Book"
+        );
+
+        let read_book = temp.database.mark_book_read(&book_id).unwrap();
+        assert!(read_book.is_read_complete);
+        assert_eq!(
+            read_book.last_chapter_id.as_deref(),
+            Some(second_chapter_id.as_str())
+        );
+    }
+
+    fn assert_path_row_count(
+        database: &Database,
+        table: &str,
+        book_path: &str,
+        expected_count: i64,
+    ) {
+        let connection = database.connect().unwrap();
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE book_path = ?1");
+        let count = connection
+            .query_row(sql.as_str(), params![book_path], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(count, expected_count);
+    }
+
+    #[test]
+    fn update_book_metadata_updates_fields_and_tag_index() {
+        let temp = TempDatabase::new();
+        let repo = repository("F:/repo", "repo-1");
+        let book_path = "F:/repo/metadata-book";
+        let mut source_book = book(&repo.id, book_path, "Original Title");
+        source_book.tags = vec!["old".to_string()];
+        temp.database.upsert_scan(&repo, &[source_book]).unwrap();
+
+        let updated = temp
+            .database
+            .update_book_metadata(UpdateBookMetadataRequest {
+                book_path: book_path.to_string(),
+                title: "Updated Title".to_string(),
+                description: Some("  Updated description  ".to_string()),
+                authors: vec![" Alice ".to_string(), "".to_string(), "Bob".to_string()],
+                tags: vec!["new".to_string(), "new".to_string(), " tag ".to_string()],
+            })
+            .unwrap();
+
+        assert_eq!(updated.title, "Updated Title");
+        assert_eq!(updated.title_override.as_deref(), Some("Updated Title"));
+        assert_eq!(updated.description.as_deref(), Some("Updated description"));
+        assert_eq!(updated.authors, vec!["Alice", "Bob"]);
+        assert_eq!(updated.tags, vec!["new", "tag"]);
+        assert_eq!(
+            temp.database.list_book_tags(None).unwrap(),
+            vec!["new".to_string(), "tag".to_string()]
+        );
     }
 
     #[test]
