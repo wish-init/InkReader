@@ -1,8 +1,12 @@
+pub mod backup;
 pub mod book;
 pub mod bookmark;
+pub mod cache;
 pub mod chapter;
 pub mod favorite;
 pub mod history;
+pub mod metadata_health;
+pub mod operation_log;
 pub mod page;
 pub mod repository;
 pub mod settings;

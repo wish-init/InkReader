@@ -8,6 +8,7 @@ import { markBookRead, markBookUnread } from '@/api/reader'
 import { toAssetUrl, type Book, type Chapter } from '@/api/tauri'
 import { getReadingStatus, getReadingStatusLabel } from '@/utils/readingStatus'
 import { getReadingProgressPercent } from '@/utils/readingProgress'
+import { formatBookPublishedAt } from '@/utils/bookDates'
 
 const props = defineProps<{ bookId: string }>()
 
@@ -36,6 +37,7 @@ const coverUrl = computed(() => {
 const progressPercent = computed(() => {
   return book.value ? getReadingProgressPercent(book.value) : 0
 })
+const publishedAtLabel = computed(() => formatBookPublishedAt(book.value?.publishedAt))
 
 const readingStatus = computed(() => book.value ? getReadingStatus(book.value) : 'unread')
 const readingStatusLabel = computed(() => getReadingStatusLabel(readingStatus.value))
@@ -225,6 +227,7 @@ onMounted(loadBook)
               </div>
 
               <NText v-if="book.authors.length" depth="2">作者：{{ book.authors.join(' / ') }}</NText>
+              <NText v-if="publishedAtLabel" depth="2">漫画发布时间：{{ publishedAtLabel }}</NText>
               <NText v-if="book.description" depth="2">{{ book.description }}</NText>
 
               <NSpace v-if="book.tags.length" :wrap="true">

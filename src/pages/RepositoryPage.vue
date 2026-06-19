@@ -3,8 +3,52 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { NAlert, NButton, NCard, NEmpty, NEllipsis, NPageHeader, NPopconfirm, NProgress, NSpace, NTag, NText, useMessage } from 'naive-ui'
-import { autoScanRepositories, listRepositories, removeRepository, scanRepository } from '@/api/repositories'
-import type { Repository, RepositoryScanProgress, RepositoryScanResult } from '@/api/tauri'
+import { autoScanRepositories, listRepositories, listRepositoryScanHistory, removeRepository, scanRepository } from '@/api/repositories'
+import type {
+  Repository,
+  RepositoryDuplicateBook,
+  RepositoryScanHistoryRecord,
+  RepositoryScanIssue,
+  RepositoryScanIssueCode,
+  RepositoryScanIssueSeverity,
+  RepositoryScanProgress,
+  RepositoryScanResult,
+} from '@/api/tauri'
+
+type ScanDiagnostic = {
+  path: string
+  reason: string
+  code: RepositoryScanIssueCode
+  severity: RepositoryScanIssueSeverity
+  suggestion?: string
+  duplicateOf?: string
+  title?: string
+}
+
+type DisplayScanResult = {
+  summary: RepositoryScanResult['summary']
+}
+
+type ScanDiagnosticGroup = {
+  code: RepositoryScanIssueCode
+  label: string
+  severity: RepositoryScanIssueSeverity
+  items: ScanDiagnostic[]
+}
+
+const scanIssueCodeLabels: Record<RepositoryScanIssueCode, string> = {
+  unchangedBook: '未变化',
+  noImages: '无可阅读图片',
+  readFailed: '读取失败',
+  duplicateBook: '疑似重复',
+  unknown: '其他问题',
+}
+
+const scanSeverityAlertTypes: Record<RepositoryScanIssueSeverity, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
+  info: 'info',
+  warning: 'warning',
+  error: 'error',
+}
 
 const repositories = ref<Repository[]>([])
 const loading = ref(false)
@@ -12,6 +56,7 @@ const autoScanning = ref(false)
 const error = ref('')
 const scanProgress = ref<RepositoryScanProgress | null>(null)
 const scanResults = ref<RepositoryScanResult[]>([])
+const scanHistory = ref<RepositoryScanHistoryRecord[]>([])
 const expandedScanResultKeys = ref<Set<string>>(new Set())
 const message = useMessage()
 let unlistenProgress: UnlistenFn | undefined
@@ -22,9 +67,30 @@ const progressPercentage = computed(() => {
   return Math.round((progress.current / progress.total) * 100)
 })
 
+const scanProgressTitle = computed(() => {
+  switch (scanProgress.value?.phase) {
+    case 'scanComplete':
+      return '扫描完成，准备保存'
+    case 'persist':
+      return '正在保存扫描结果'
+    case 'finish':
+      return '扫描完成'
+    default:
+      return '正在扫描仓库'
+  }
+})
+
 async function loadRepositories() {
   try {
     repositories.value = await listRepositories()
+  } catch (innerError) {
+    error.value = String(innerError)
+  }
+}
+
+async function loadScanHistory() {
+  try {
+    scanHistory.value = await listRepositoryScanHistory()
   } catch (innerError) {
     error.value = String(innerError)
   }
@@ -40,6 +106,7 @@ async function addRepository() {
     const result = await scanRepository(selected)
     scanResults.value = [result, ...scanResults.value].slice(0, 8)
     await loadRepositories()
+    await loadScanHistory()
     message.success(scanSummaryMessage(result))
   } catch (innerError) {
     error.value = String(innerError)
@@ -55,6 +122,7 @@ async function rescan(repository: Repository) {
     const result = await scanRepository(repository.path)
     scanResults.value = [result, ...scanResults.value].slice(0, 8)
     await loadRepositories()
+    await loadScanHistory()
     message.success(`已重新扫描「${repository.name}」：${scanSummaryMessage(result)}`)
   } catch (innerError) {
     error.value = String(innerError)
@@ -85,6 +153,7 @@ async function autoUpdateRepositories() {
     const results = await autoScanRepositories()
     scanResults.value = results
     await loadRepositories()
+    await loadScanHistory()
     if (results.length) {
       message.success(`已自动更新 ${results.length} 个仓库`)
     }
@@ -119,16 +188,75 @@ function toggleScanResultDetails(result: RepositoryScanResult) {
   expandedScanResultKeys.value = nextKeys
 }
 
-function hasScanDetails(result: RepositoryScanResult) {
-  return Boolean(
-    result.summary.skippedEntries.length
-      || result.summary.failedEntries.length
-      || result.summary.duplicateBooks.length,
-  )
+function hasScanDetails(result: DisplayScanResult) {
+  return scanDiagnostics(result).length > 0
 }
 
 function visibleScanEntries<T>(entries: T[], expanded: boolean) {
   return expanded ? entries : entries.slice(0, 3)
+}
+
+function scanDiagnosticGroups(result: DisplayScanResult): ScanDiagnosticGroup[] {
+  const groups = new Map<RepositoryScanIssueCode, ScanDiagnosticGroup>()
+
+  for (const diagnostic of scanDiagnostics(result)) {
+    const existing = groups.get(diagnostic.code)
+    if (existing) {
+      existing.items.push(diagnostic)
+      continue
+    }
+
+    groups.set(diagnostic.code, {
+      code: diagnostic.code,
+      label: scanIssueCodeLabels[diagnostic.code],
+      severity: diagnostic.severity,
+      items: [diagnostic],
+    })
+  }
+
+  return Array.from(groups.values())
+}
+
+function scanDiagnostics(result: DisplayScanResult): ScanDiagnostic[] {
+  return [
+    ...result.summary.skippedEntries.map(normalizeScanIssue),
+    ...result.summary.failedEntries.map(normalizeScanIssue),
+    ...result.summary.duplicateBooks.map(duplicateBookDiagnostic),
+  ]
+}
+
+function normalizeScanIssue(issue: RepositoryScanIssue): ScanDiagnostic {
+  return {
+    path: issue.path,
+    reason: issue.reason,
+    code: normalizeScanIssueCode(issue.code),
+    severity: normalizeScanIssueSeverity(issue.severity, issue.code),
+    suggestion: issue.suggestion,
+  }
+}
+
+function duplicateBookDiagnostic(book: RepositoryDuplicateBook): ScanDiagnostic {
+  return {
+    path: book.path,
+    reason: `${fileName(book.path)} 与 ${fileName(book.duplicateOf)} 疑似重复`,
+    code: 'duplicateBook',
+    severity: 'warning',
+    suggestion: '检查两本书是否为同一内容后再整理。',
+    duplicateOf: book.duplicateOf,
+    title: book.title,
+  }
+}
+
+function normalizeScanIssueCode(code?: RepositoryScanIssueCode): RepositoryScanIssueCode {
+  return code && code in scanIssueCodeLabels ? code : 'unknown'
+}
+
+function normalizeScanIssueSeverity(
+  severity?: RepositoryScanIssueSeverity,
+  code?: RepositoryScanIssueCode,
+): RepositoryScanIssueSeverity {
+  if (severity === 'info' || severity === 'warning' || severity === 'error') return severity
+  return code === 'unchangedBook' ? 'info' : 'warning'
 }
 
 function formatDateTime(value?: string | null) {
@@ -146,7 +274,7 @@ onMounted(async () => {
   unlistenProgress = await listen<RepositoryScanProgress>('repository-scan-progress', (event) => {
     scanProgress.value = event.payload
   })
-  await loadRepositories()
+  await Promise.all([loadRepositories(), loadScanHistory()])
 })
 
 onBeforeUnmount(() => {
@@ -174,7 +302,7 @@ onBeforeUnmount(() => {
     <NCard v-if="scanProgress && (autoScanning || loading)" class="toolbar-card" :bordered="false">
       <NSpace vertical size="small">
         <NSpace justify="space-between">
-          <NText strong>{{ scanProgress.phase === 'finish' ? '扫描完成' : '正在扫描仓库' }}</NText>
+          <NText strong>{{ scanProgressTitle }}</NText>
           <NText depth="3">{{ scanProgress.current }} / {{ scanProgress.total }}</NText>
         </NSpace>
         <NProgress type="line" :percentage="progressPercentage" :show-indicator="false" />
@@ -208,38 +336,79 @@ onBeforeUnmount(() => {
               {{ isScanResultExpanded(result) ? '收起明细' : '查看明细' }}
             </NButton>
           </NSpace>
-          <div v-if="result.summary.skippedEntries.length" class="scan-detail-block">
-            <NText strong depth="3">跳过</NText>
-            <NText
-              v-for="item in visibleScanEntries(result.summary.skippedEntries, isScanResultExpanded(result))"
-              :key="`${item.path}-${item.reason}`"
-              depth="3"
+          <NAlert
+            v-for="group in scanDiagnosticGroups(result)"
+            :key="group.code"
+            :type="scanSeverityAlertTypes[group.severity]"
+            :show-icon="false"
+          >
+            <NSpace vertical size="small">
+              <NSpace align="center" size="small">
+                <NText strong>{{ group.label }}</NText>
+                <NTag size="small" round>{{ group.items.length }}</NTag>
+              </NSpace>
+              <NText
+                v-for="item in visibleScanEntries(group.items, isScanResultExpanded(result))"
+                :key="`${item.code}-${item.path}-${item.reason}`"
+              >
+                <template v-if="item.code === 'duplicateBook' && item.duplicateOf">
+                  {{ item.title || fileName(item.path) }}：{{ fileName(item.path) }} 与 {{ fileName(item.duplicateOf) }}
+                </template>
+                <template v-else>
+                  {{ fileName(item.path) }}：{{ item.reason }}
+                </template>
+                <NText v-if="item.suggestion" depth="3">（{{ item.suggestion }}）</NText>
+              </NText>
+            </NSpace>
+          </NAlert>
+        </NSpace>
+      </NCard>
+    </NSpace>
+
+    <NSpace v-if="scanHistory.length" vertical size="small" class="repository-list">
+      <NText strong>最近扫描历史</NText>
+      <NCard v-for="record in scanHistory" :key="record.id" :bordered="false" class="toolbar-card">
+        <NSpace vertical size="small">
+          <NSpace align="center" :wrap="true">
+            <NText strong>{{ record.repositoryName }}</NText>
+            <NText depth="3">{{ formatDateTime(record.scannedAt) }}</NText>
+            <NTag size="small" round>更新 {{ record.summary.scannedBooks }}</NTag>
+            <NTag size="small" round>未变化 {{ record.summary.unchangedBooks }}</NTag>
+            <NTag v-if="record.summary.failedEntries.length" size="small" type="error" round>
+              失败 {{ record.summary.failedEntries.length }}
+            </NTag>
+            <NTag v-if="record.summary.duplicateBooks.length" size="small" type="warning" round>
+              疑似重复 {{ record.summary.duplicateBooks.length }}
+            </NTag>
+          </NSpace>
+          <NEllipsis class="path-text">{{ record.repositoryPath }}</NEllipsis>
+          <template v-if="hasScanDetails(record)">
+            <NAlert
+              v-for="group in scanDiagnosticGroups(record)"
+              :key="`${record.id}-${group.code}`"
+              :type="scanSeverityAlertTypes[group.severity]"
+              :show-icon="false"
             >
-              {{ fileName(item.path) }}：{{ item.reason }}
-            </NText>
-          </div>
-          <NAlert v-if="result.summary.failedEntries.length" type="warning" :show-icon="false">
-            <NSpace vertical size="small">
-              <NText strong>失败</NText>
-              <NText
-                v-for="item in visibleScanEntries(result.summary.failedEntries, isScanResultExpanded(result))"
-                :key="`${item.path}-${item.reason}`"
-              >
-                {{ fileName(item.path) }}：{{ item.reason }}
-              </NText>
-            </NSpace>
-          </NAlert>
-          <NAlert v-if="result.summary.duplicateBooks.length" type="info" :show-icon="false">
-            <NSpace vertical size="small">
-              <NText strong>疑似重复</NText>
-              <NText
-                v-for="item in visibleScanEntries(result.summary.duplicateBooks, isScanResultExpanded(result))"
-                :key="`${item.path}-${item.duplicateOf}`"
-              >
-                {{ item.title }}：{{ fileName(item.path) }} 与 {{ fileName(item.duplicateOf) }}
-              </NText>
-            </NSpace>
-          </NAlert>
+              <NSpace vertical size="small">
+                <NSpace align="center" size="small">
+                  <NText strong>{{ group.label }}</NText>
+                  <NTag size="small" round>{{ group.items.length }}</NTag>
+                </NSpace>
+                <NText
+                  v-for="item in visibleScanEntries(group.items, false)"
+                  :key="`${item.code}-${item.path}-${item.reason}`"
+                >
+                  <template v-if="item.code === 'duplicateBook' && item.duplicateOf">
+                    {{ item.title || fileName(item.path) }}：{{ fileName(item.path) }} 与 {{ fileName(item.duplicateOf) }}
+                  </template>
+                  <template v-else>
+                    {{ fileName(item.path) }}：{{ item.reason }}
+                  </template>
+                  <NText v-if="item.suggestion" depth="3">（{{ item.suggestion }}）</NText>
+                </NText>
+              </NSpace>
+            </NAlert>
+          </template>
         </NSpace>
       </NCard>
     </NSpace>

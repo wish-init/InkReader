@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, type CSSProperties } from 'vue'
 import { NButton, NCard, NCheckbox, NEllipsis, NTag, NText } from 'naive-ui'
 import { toAssetUrl, type BookSummary, type LibraryViewSettings } from '@/api/tauri'
 import { getReadingStatus, getReadingStatusLabel } from '@/utils/readingStatus'
 import { getReadingProgressPercent } from '@/utils/readingProgress'
+import { normalizeTitleFontSize, normalizeTitleLineClamp } from '@/utils/libraryViewSettings'
+import { formatBookPublishedAt } from '@/utils/bookDates'
 
 const props = withDefaults(defineProps<{
   book: BookSummary
@@ -22,6 +24,7 @@ const emit = defineEmits<{
   toggleFavorite: [book: BookSummary]
   toggleSelection: [book: BookSummary]
   selectTag: [tag: string]
+  selectAuthor: [author: string]
   detail: [book: BookSummary]
   bookContextMenu: [payload: { book: BookSummary, x: number, y: number }]
 }>()
@@ -38,13 +41,21 @@ const visibleTags = computed(() => {
 const progressPercent = computed(() => {
   return getReadingProgressPercent(props.book)
 })
+const publishedAtLabel = computed(() => formatBookPublishedAt(props.book.publishedAt))
 
 const readingStatus = computed(() => getReadingStatus(props.book))
 const readingStatusLabel = computed(() => getReadingStatusLabel(readingStatus.value))
 const hasProgress = computed(() => readingStatus.value !== 'unread')
 const normalizedHighlightQuery = computed(() => normalizeText(props.highlightQuery ?? ''))
 const highlightedTitle = computed(() => highlightText(props.book.title, normalizedHighlightQuery.value))
-const highlightedAuthors = computed(() => highlightText(props.book.authors.join(' / '), normalizedHighlightQuery.value))
+const titleLineHeight = 1.4
+const titleLineClamp = computed(() => normalizeTitleLineClamp(props.settings.titleLineClamp))
+const titleFontSize = computed(() => normalizeTitleFontSize(props.settings.titleFontSize))
+const bookTitleStyle = computed<CSSProperties>(() => ({
+  fontSize: `${titleFontSize.value}px`,
+  lineHeight: String(titleLineHeight),
+  minHeight: `${Math.ceil(titleLineClamp.value * titleFontSize.value * titleLineHeight)}px`,
+}))
 
 type TextSegment = {
   text: string
@@ -113,19 +124,37 @@ function highlightText(value: string, normalizedQuery: string): TextSegment[] {
       </div>
 
       <div class="book-info">
-        <NEllipsis :line-clamp="2" class="book-title" :tooltip="false">
+        <NEllipsis
+          :line-clamp="titleLineClamp"
+          class="book-title"
+          :style="bookTitleStyle"
+          :tooltip="{ contentStyle: { maxWidth: '360px', whiteSpace: 'normal' } }"
+        >
+          <template #tooltip>{{ props.book.title }}</template>
           <template v-for="(segment, index) in highlightedTitle" :key="index">
             <mark v-if="segment.highlight" class="search-highlight">{{ segment.text }}</mark>
             <template v-else>{{ segment.text }}</template>
           </template>
         </NEllipsis>
-        <NText v-if="props.settings.showAuthors && props.book.authors.length" depth="3" class="book-meta">
-          <template v-for="(segment, index) in highlightedAuthors" :key="index">
-            <mark v-if="segment.highlight" class="search-highlight">{{ segment.text }}</mark>
-            <template v-else>{{ segment.text }}</template>
+        <NText v-if="props.settings.showAuthors && props.book.authors.length" depth="3" class="book-meta book-authors">
+          <template v-for="(author, authorIndex) in props.book.authors" :key="`${author}-${authorIndex}`">
+            <button
+              type="button"
+              class="book-author-link"
+              @click.stop="emit('selectAuthor', author)"
+              @keydown.enter.stop
+              @keydown.space.stop
+            >
+              <template v-for="(segment, segmentIndex) in highlightText(author, normalizedHighlightQuery)" :key="segmentIndex">
+                <mark v-if="segment.highlight" class="search-highlight">{{ segment.text }}</mark>
+                <template v-else>{{ segment.text }}</template>
+              </template>
+            </button>
+            <span v-if="authorIndex < props.book.authors.length - 1" class="book-author-separator"> / </span>
           </template>
         </NText>
         <NText depth="3" class="book-meta">{{ props.book.chapterCount }} 章 · {{ props.book.totalPages }} 页</NText>
+        <NText v-if="publishedAtLabel" depth="3" class="book-meta">漫画发布时间：{{ publishedAtLabel }}</NText>
         <div class="book-progress">
           <span class="book-progress-bar">
             <span :style="{ width: `${progressPercent}%` }" />

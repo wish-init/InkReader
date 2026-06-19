@@ -17,8 +17,8 @@ use crate::{
         page::Page,
         repository::{Repository, RepositoryScanResult},
         repository::{
-            RepositoryDuplicateBook, RepositoryScanIssue, RepositoryScanProgress,
-            RepositoryScanSummary,
+            RepositoryDuplicateBook, RepositoryScanIssue, RepositoryScanIssueCode,
+            RepositoryScanIssueSeverity, RepositoryScanProgress, RepositoryScanSummary,
         },
     },
     scanner::{
@@ -124,10 +124,13 @@ where
         let signature = match scan_signature(&entry_path) {
             Ok(signature) => signature,
             Err(error) => {
-                failed_entries.push(RepositoryScanIssue {
-                    path: entry_path_string,
-                    reason: error.to_string(),
-                });
+                failed_entries.push(scan_issue(
+                    entry_path_string,
+                    error.to_string(),
+                    RepositoryScanIssueCode::ReadFailed,
+                    RepositoryScanIssueSeverity::Error,
+                    Some("检查文件权限或路径是否仍然可访问。"),
+                ));
                 continue;
             }
         };
@@ -137,10 +140,13 @@ where
             .is_some_and(|existing| existing == &signature)
         {
             current_book_paths.push(entry_path_string.clone());
-            skipped_entries.push(RepositoryScanIssue {
-                path: entry_path_string,
-                reason: "文件未变化，已跳过深度扫描".to_string(),
-            });
+            skipped_entries.push(scan_issue(
+                entry_path_string,
+                "文件未变化，已跳过深度扫描",
+                RepositoryScanIssueCode::UnchangedBook,
+                RepositoryScanIssueSeverity::Info,
+                None,
+            ));
             continue;
         }
 
@@ -156,26 +162,29 @@ where
                 current_book_paths.push(entry_path_string);
                 books.push(book);
             }
-            Ok(None) => skipped_entries.push(RepositoryScanIssue {
-                path: entry_path_string,
-                reason: "没有找到可阅读的图片章节".to_string(),
-            }),
+            Ok(None) => skipped_entries.push(scan_issue(
+                entry_path_string,
+                "没有找到可阅读的图片章节",
+                RepositoryScanIssueCode::NoImages,
+                RepositoryScanIssueSeverity::Warning,
+                Some("确认目录或压缩包中包含支持的图片文件。"),
+            )),
             Err(error) => {
                 if existing_signatures.contains_key(&entry_path_string) {
                     current_book_paths.push(entry_path_string.clone());
                 }
-                failed_entries.push(RepositoryScanIssue {
-                    path: entry_path_string,
-                    reason: error.to_string(),
-                });
+                failed_entries.push(scan_issue(
+                    entry_path_string,
+                    error.to_string(),
+                    RepositoryScanIssueCode::ReadFailed,
+                    RepositoryScanIssueSeverity::Error,
+                    Some("检查该条目的文件结构、压缩包完整性或读取权限。"),
+                ));
             }
         }
     }
 
-    let unchanged_books = skipped_entries
-        .iter()
-        .filter(|entry| entry.reason.contains("未变化"))
-        .count();
+    let unchanged_books = count_unchanged_books(&skipped_entries);
 
     if books.is_empty() && unchanged_books == 0 {
         return Err(AppError::EmptyRepository(path.display().to_string()));
@@ -199,13 +208,14 @@ where
         &path,
         total_entries,
         total_entries,
-        "finish",
-        "扫描完成".to_string(),
+        "scanComplete",
+        "扫描完成，准备保存".to_string(),
     );
 
     let scanned_books = books.len();
     Ok(RepositoryScanResult {
         repository,
+        scan_id,
         books,
         summary: RepositoryScanSummary {
             total_entries,
@@ -219,13 +229,37 @@ where
     })
 }
 
+fn scan_issue(
+    path: String,
+    reason: impl Into<String>,
+    code: RepositoryScanIssueCode,
+    severity: RepositoryScanIssueSeverity,
+    suggestion: Option<&str>,
+) -> RepositoryScanIssue {
+    RepositoryScanIssue {
+        path,
+        reason: reason.into(),
+        code,
+        severity,
+        suggestion: suggestion.map(str::to_string),
+    }
+}
+
+fn count_unchanged_books(skipped_entries: &[RepositoryScanIssue]) -> usize {
+    skipped_entries
+        .iter()
+        .filter(|entry| entry.code == RepositoryScanIssueCode::UnchangedBook)
+        .count()
+}
+
 /// Scan a ZIP/CBZ/RAR/CBR archive as a book.
 /// Reads metadata, organizes images into chapters, and returns a Book struct.
-/// Extracts book title, source_id, description, authors, and tags from optional metadata.
+/// Extracts book title, source_id, published_at, description, authors, and tags from optional metadata.
 /// Shared between scan_book and scan_archive_book to prevent logic drift.
 pub(crate) struct BookMetadataFields {
     title: String,
     source_id: Option<String>,
+    published_at: Option<String>,
     description: Option<String>,
     authors: Vec<String>,
     tags: Vec<String>,
@@ -245,6 +279,7 @@ impl BookMetadataFields {
         Self {
             title,
             source_id: metadata.and_then(ComicMetadata::source_id),
+            published_at: metadata.and_then(|m| m.published_at()),
             description: metadata.and_then(|m| m.description.clone()),
             authors: metadata.map(|m| m.author.clone()).unwrap_or_default(),
             tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
@@ -447,6 +482,7 @@ fn scan_archive_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult
         metadata_path: None,
         cover_path,
         thumbnail_path: None,
+        published_at: fields.published_at,
         description: fields.description,
         authors: fields.authors,
         tags: fields.tags,
@@ -532,6 +568,8 @@ fn scan_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult<Option<
     }
 
     sort_chapters(&mut chapters);
+    let fallback_cover_path =
+        fallback_cover_path.or_else(|| first_chapter_image_cover_path(&chapters));
 
     let fields = BookMetadataFields::from_metadata_and_path(metadata.as_ref(), &path);
 
@@ -551,6 +589,7 @@ fn scan_book(repository_id: &str, path: PathBuf, now: &str) -> AppResult<Option<
             .map(|path| path.to_string_lossy().to_string())
             .or(fallback_cover_path),
         thumbnail_path: None,
+        published_at: fields.published_at,
         description: fields.description,
         authors: fields.authors,
         tags: fields.tags,
@@ -586,6 +625,15 @@ fn find_cover_path(book_path: &Path) -> Option<PathBuf> {
     });
 
     nested_covers.into_iter().next()
+}
+
+fn first_chapter_image_cover_path(chapters: &[Chapter]) -> Option<String> {
+    chapters
+        .iter()
+        .flat_map(|chapter| chapter.pages.iter())
+        .map(|page| page.path.as_str())
+        .find(|path| is_supported_image(Path::new(path)))
+        .map(str::to_string)
 }
 
 fn read_metadata(path: &Path) -> AppResult<ComicMetadata> {
@@ -804,6 +852,7 @@ fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         io::Write,
         path::{Path, PathBuf},
@@ -812,9 +861,12 @@ mod tests {
     use uuid::Uuid;
     use zip::{write::SimpleFileOptions, ZipWriter};
 
-    use crate::errors::AppError;
+    use crate::{
+        errors::AppError,
+        models::repository::{RepositoryScanIssueCode, RepositoryScanIssueSeverity},
+    };
 
-    use super::scan_repository;
+    use super::{count_unchanged_books, scan_issue, scan_repository, scan_repository_incremental};
 
     struct TempRepository {
         path: PathBuf,
@@ -917,6 +969,29 @@ mod tests {
     }
 
     #[test]
+    fn nested_chapter_comic_uses_first_page_as_cover_when_no_cover_file_exists() {
+        let repository = TempRepository::new();
+        let book = repository.path.join("漫画A");
+        let chapter = book.join("第1话");
+        fs::create_dir_all(&chapter).unwrap();
+        write_image(chapter.join("002.jpg"));
+        write_image(chapter.join("001.jpg"));
+
+        let result = scan_repository(repository.path()).unwrap();
+
+        assert_eq!(result.books.len(), 1);
+        assert_eq!(
+            result.books[0]
+                .cover_path
+                .as_deref()
+                .map(Path::new)
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str()),
+            Some("001.jpg")
+        );
+    }
+
+    #[test]
     fn single_layer_cover_is_excluded_from_pages() {
         let repository = TempRepository::new();
         let book = repository.path.join("漫画A");
@@ -984,5 +1059,68 @@ mod tests {
 
         let error = scan_repository(repository.path()).unwrap_err();
         assert!(matches!(error, AppError::EmptyRepository(_)));
+    }
+
+    #[test]
+    fn empty_book_directory_reports_no_images_issue_when_other_books_scan() {
+        let repository = TempRepository::new();
+        fs::create_dir_all(repository.path.join("空目录")).unwrap();
+        let valid_book = repository.path.join("漫画A");
+        fs::create_dir_all(&valid_book).unwrap();
+        write_image(valid_book.join("001.jpg"));
+
+        let result = scan_repository(repository.path()).unwrap();
+
+        assert_eq!(result.summary.skipped_entries.len(), 1);
+        let issue = &result.summary.skipped_entries[0];
+        assert_eq!(issue.code, RepositoryScanIssueCode::NoImages);
+        assert_eq!(issue.severity, RepositoryScanIssueSeverity::Warning);
+        assert!(issue.reason.contains("没有找到可阅读的图片章节"));
+        assert!(issue.suggestion.is_some());
+    }
+
+    #[test]
+    fn unchanged_incremental_entry_reports_stable_issue_code() {
+        let repository = TempRepository::new();
+        let book = repository.path.join("漫画A");
+        fs::create_dir_all(&book).unwrap();
+        write_image(book.join("001.jpg"));
+        let first_scan = scan_repository(repository.path()).unwrap();
+        let book_path = first_scan.books[0].path.clone();
+        let signature = first_scan.books[0].scan_signature.clone().unwrap();
+        let mut existing_signatures = HashMap::new();
+        existing_signatures.insert(book_path, signature);
+
+        let result = scan_repository_incremental(
+            repository.path(),
+            Some(first_scan.repository.id),
+            &existing_signatures,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(result.books.len(), 0);
+        assert_eq!(result.summary.unchanged_books, 1);
+        assert_eq!(result.summary.skipped_entries.len(), 1);
+        let issue = &result.summary.skipped_entries[0];
+        assert_eq!(issue.code, RepositoryScanIssueCode::UnchangedBook);
+        assert_eq!(issue.severity, RepositoryScanIssueSeverity::Info);
+        assert!(issue.suggestion.is_none());
+    }
+
+    #[test]
+    fn unchanged_count_uses_issue_code_not_reason_text() {
+        let skipped_entries = vec![scan_issue(
+            "F:/repo/book".to_string(),
+            "text without localized unchanged copy",
+            RepositoryScanIssueCode::UnchangedBook,
+            RepositoryScanIssueSeverity::Info,
+            None,
+        )];
+
+        let unchanged_books = count_unchanged_books(&skipped_entries);
+
+        assert_eq!(unchanged_books, 1);
+        assert!(!skipped_entries[0].reason.contains("未变化"));
     }
 }

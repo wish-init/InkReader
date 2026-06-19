@@ -1,4 +1,5 @@
 import type { BookSummary } from '@/api/tauri'
+import { parseBookPublishedAtTime } from '@/utils/bookDates'
 
 export type { BookSortKey, SortDirection } from '@/api/tauri'
 
@@ -8,6 +9,18 @@ export function sortBooks<T extends BookSummary>(books: T[], sortKey: import('@/
     if (sortKey === 'lastReadAt') {
       const aTime = parseOptionalDate(a.lastReadAt)
       const bTime = parseOptionalDate(b.lastReadAt)
+      if (aTime === null && bTime !== null) return 1
+      if (aTime !== null && bTime === null) return -1
+      if (aTime !== null && bTime !== null) {
+        const primary = (aTime - bTime) * multiplier
+        if (primary !== 0) return primary
+      }
+      return compareBooksByStableFallback(a, b)
+    }
+
+    if (sortKey === 'publishedAt') {
+      const aTime = parseBookPublishedAtTime(a.publishedAt)
+      const bTime = parseBookPublishedAtTime(b.publishedAt)
       if (aTime === null && bTime !== null) return 1
       if (aTime !== null && bTime === null) return -1
       if (aTime !== null && bTime !== null) {

@@ -35,3 +35,10 @@ pub fn mark_book_unread(state: State<'_, AppState>, book_id: String) -> AppResul
 pub fn list_reading_history(state: State<'_, AppState>) -> AppResult<Vec<ReadingHistoryRecord>> {
     state.database.list_reading_history()
 }
+
+#[tauri::command]
+pub fn list_reading_history_by_book(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ReadingHistoryRecord>> {
+    state.database.list_reading_history_by_book()
+}

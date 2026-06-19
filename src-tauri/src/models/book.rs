@@ -14,6 +14,7 @@ pub struct BookSummary {
     pub metadata_path: Option<String>,
     pub cover_path: Option<String>,
     pub thumbnail_path: Option<String>,
+    pub published_at: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
@@ -34,14 +35,25 @@ pub struct BookListRequest {
     pub repository_id: Option<String>,
     pub collection_id: Option<String>,
     pub query: Option<String>,
+    pub author: Option<String>,
+    pub authors: Option<Vec<String>>,
     pub tag: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub exclude_tags: Option<Vec<String>>,
+    pub metadata_filters: Option<Vec<String>>,
     pub reading_status: Option<String>,
     pub favorite_status: Option<String>,
     pub sort_key: Option<String>,
     pub sort_direction: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookAggregationItem {
+    pub name: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +94,7 @@ pub struct Book {
     pub metadata_path: Option<String>,
     pub cover_path: Option<String>,
     pub thumbnail_path: Option<String>,
+    pub published_at: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,

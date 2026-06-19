@@ -1,6 +1,7 @@
 import {
   call,
   type Book,
+  type BookAggregationItem,
   type BookListRequest,
   type BookListResponse,
   type BookThumbnail,
@@ -25,13 +26,29 @@ export function listBookTags(repositoryId?: string): Promise<string[]> {
   return call('list_book_tags', { repositoryId: repositoryId ?? null })
 }
 
+export function listBookAuthors(repositoryId?: string): Promise<string[]> {
+  return call('list_book_authors', { repositoryId: repositoryId ?? null })
+}
+
+export function listBookTagAggregations(query?: string): Promise<BookAggregationItem[]> {
+  return call('list_book_tag_aggregations', { query: query ?? null })
+}
+
+export function listBookAuthorAggregations(query?: string): Promise<BookAggregationItem[]> {
+  return call('list_book_author_aggregations', { query: query ?? null })
+}
+
 function normalizeBookListRequest(request: BookListRequest): BookListRequest {
   return {
     repositoryId: request.repositoryId ?? null,
     collectionId: request.collectionId ?? null,
     query: request.query ?? null,
+    author: request.author ?? null,
+    authors: request.authors ?? null,
     tag: request.tag ?? null,
     tags: request.tags ?? null,
+    excludeTags: request.excludeTags ?? null,
+    metadataFilters: request.metadataFilters ?? null,
     readingStatus: request.readingStatus ?? 'all',
     favoriteStatus: request.favoriteStatus ?? 'all',
     sortKey: request.sortKey ?? 'createdAt',
@@ -51,6 +68,14 @@ export function createFavoriteCollection(name: string): Promise<FavoriteCollecti
 
 export function renameFavoriteCollection(collectionId: string, name: string): Promise<FavoriteCollection> {
   return call('rename_favorite_collection', { collectionId, name })
+}
+
+export function updateFavoriteCollectionMetadata(
+  collectionId: string,
+  coverPath?: string | null,
+  description?: string | null,
+): Promise<FavoriteCollection> {
+  return call('update_favorite_collection_metadata', { collectionId, coverPath: coverPath ?? null, description: description ?? null })
 }
 
 export function deleteFavoriteCollection(collectionId: string): Promise<void> {
@@ -103,6 +128,14 @@ export function resetBookTitle(bookPath: string): Promise<Book> {
 
 export function updateBookMetadata(request: UpdateBookMetadataRequest): Promise<Book> {
   return call('update_book_metadata', { request })
+}
+
+export function updateBookAuthors(bookPath: string, authors: string[]): Promise<Book> {
+  return call('update_book_authors', { bookPath, authors })
+}
+
+export function updateBookTags(bookPath: string, tags: string[]): Promise<Book> {
+  return call('update_book_tags', { bookPath, tags })
 }
 
 export function getBook(bookId: string): Promise<Book> {

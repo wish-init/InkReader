@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { NButton, NLayout, NLayoutContent, NLayoutSider, NMenu, NText, type MenuOption } from 'naive-ui'
@@ -10,8 +10,11 @@ const siderCollapsedKey = 'inkreader:sider-collapsed'
 const navItems = [
   { key: 'library', label: '书架', path: '/library', icon: '书' },
   { key: 'favorites', label: '收藏', path: '/favorites', icon: '藏' },
+  { key: 'authors', label: '作者', path: '/authors', icon: 'A' },
+  { key: 'tags', label: '标签', path: '/tags', icon: '#' },
   { key: 'history', label: '阅读记录', path: '/history', icon: '史' },
-  { key: 'repositories', label: '仓库', path: '/repositories', icon: '仓' },
+  { key: 'health', label: '健康', path: '/health', icon: '!' },
+  { key: 'repositories', label: '仓库', path: '/repositories', icon: '库' },
   { key: 'settings', label: '设置', path: '/settings', icon: '设' },
 ]
 const siderCollapsed = ref(loadSiderCollapsed())

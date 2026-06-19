@@ -1,6 +1,10 @@
 pub mod archive;
+pub mod backup;
 pub mod bookmark;
+pub mod cache;
 pub mod library;
+pub mod metadata_health;
+pub mod operation_log;
 pub mod reader;
 pub mod repositories;
 pub mod settings;

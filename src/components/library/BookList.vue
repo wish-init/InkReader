@@ -18,6 +18,7 @@ const emit = defineEmits<{
   toggleFavorite: [book: BookSummary]
   toggleSelection: [book: BookSummary]
   selectTag: [tag: string]
+  selectAuthor: [author: string]
   detail: [book: BookSummary]
   bookContextMenu: [payload: { book: BookSummary, x: number, y: number }]
 }>()
@@ -38,6 +39,7 @@ const emit = defineEmits<{
       @toggle-favorite="emit('toggleFavorite', $event)"
       @toggle-selection="emit('toggleSelection', $event)"
       @select-tag="emit('selectTag', $event)"
+      @select-author="emit('selectAuthor', $event)"
       @detail="emit('detail', $event)"
       @book-context-menu="emit('bookContextMenu', $event)"
     />

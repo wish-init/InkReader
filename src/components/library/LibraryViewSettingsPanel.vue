@@ -1,48 +1,47 @@
 <script setup lang="ts">
 import { NForm, NFormItem, NGrid, NGridItem, NSelect, NSwitch } from 'naive-ui'
 import type { LibraryViewSettings } from '@/api/tauri'
+import {
+  libraryCoverSizeSelectOptions,
+  libraryLayoutSelectOptions,
+  tagLimitOptions,
+  titleFontSizeOptions,
+  titleLineClampOptions,
+} from '@/utils/libraryViewSettings'
 
 const settings = defineModel<LibraryViewSettings>({ required: true })
-
-const layoutOptions = [
-  { label: '网格', value: 'grid' },
-  { label: '紧凑网格', value: 'compact' },
-  { label: '列表', value: 'list' },
-]
-
-const coverSizeOptions = [
-  { label: '小', value: 'small' },
-  { label: '中', value: 'medium' },
-  { label: '大', value: 'large' },
-]
-
-const tagLimitOptions = [
-  { label: '不显示', value: 0 },
-  { label: '2 个', value: 2 },
-  { label: '4 个', value: 4 },
-  { label: '8 个', value: 8 },
-  { label: '全部', value: 999 },
-]
 </script>
 
 <template>
   <NForm label-placement="top" class="view-settings-panel">
-    <NGrid :cols="5" :x-gap="14" :y-gap="14" responsive="screen">
+    <NGrid :cols="7" :x-gap="14" :y-gap="14" responsive="screen">
       <NGridItem>
         <NFormItem label="列表样式" path="layout">
-          <NSelect v-model:value="settings.layout" :options="layoutOptions" />
+          <NSelect v-model:value="settings.layout" :options="libraryLayoutSelectOptions" />
         </NFormItem>
       </NGridItem>
 
       <NGridItem>
         <NFormItem label="封面大小" path="coverSize">
-          <NSelect v-model:value="settings.coverSize" :options="coverSizeOptions" />
+          <NSelect v-model:value="settings.coverSize" :options="libraryCoverSizeSelectOptions" />
         </NFormItem>
       </NGridItem>
 
       <NGridItem>
         <NFormItem label="标签数量" path="tagLimit">
           <NSelect v-model:value="settings.tagLimit" :options="tagLimitOptions" />
+        </NFormItem>
+      </NGridItem>
+
+      <NGridItem>
+        <NFormItem label="标题行数" path="titleLineClamp">
+          <NSelect v-model:value="settings.titleLineClamp" :options="titleLineClampOptions" />
+        </NFormItem>
+      </NGridItem>
+
+      <NGridItem>
+        <NFormItem label="标题字号" path="titleFontSize">
+          <NSelect v-model:value="settings.titleFontSize" :options="titleFontSizeOptions" />
         </NFormItem>
       </NGridItem>
 

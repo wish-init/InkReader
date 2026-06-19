@@ -1,4 +1,4 @@
-import { call, type Repository, type RepositoryScanResult } from './tauri'
+import { call, type Repository, type RepositoryScanHistoryRecord, type RepositoryScanResult } from './tauri'
 
 export function listRepositories(): Promise<Repository[]> {
   return call('list_repositories')
@@ -10,6 +10,10 @@ export function scanRepository(path: string): Promise<RepositoryScanResult> {
 
 export function autoScanRepositories(): Promise<RepositoryScanResult[]> {
   return call('auto_scan_repositories')
+}
+
+export function listRepositoryScanHistory(): Promise<RepositoryScanHistoryRecord[]> {
+  return call('list_repository_scan_history')
 }
 
 export function removeRepository(repositoryId: string): Promise<void> {

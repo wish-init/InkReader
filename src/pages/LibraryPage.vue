@@ -18,38 +18,60 @@ import {
   NSelect,
   NSpace,
   NSpin,
+  NTag,
   NText,
+  useDialog,
   useMessage,
   type SelectOption,
 } from 'naive-ui'
 import {
   addBookToFavoriteCollection,
   createFavoriteCollection,
-  ensureBookThumbnails,
+  listBookAuthors,
   listBookFavoriteCollections,
   listBooks,
   listBookTags,
   listFavoriteCollections,
   removeBookFromFavoriteCollection,
-  renameBookTitle,
   resetBookTitle,
+  updateBookAuthors,
+  updateBookTags,
 } from '@/api/library'
-import { getLibraryViewSettings, saveLibraryViewSettings } from '@/api/settings'
 import { listRepositories } from '@/api/repositories'
 import { markBookRead, markBookUnread } from '@/api/reader'
 import BookList from '@/components/library/BookList.vue'
 import LibraryViewSettingsPanel from '@/components/library/LibraryViewSettingsPanel.vue'
-import type { BookSummary, FavoriteCollection, FavoriteStatus, LibraryViewSettings, ReadingStatus, Repository } from '@/api/tauri'
+import { useBookListController } from '@/composables/library/useBookListController'
+import { useBookContextMenu } from '@/composables/library/useBookContextMenu'
+import { useBookRenameDialog } from '@/composables/library/useBookRenameDialog'
+import { useBookSelection } from '@/composables/library/useBookSelection'
+import { useBookThumbnailHydration } from '@/composables/library/useBookThumbnailHydration'
+import { useLibraryViewSettings } from '@/composables/library/useLibraryViewSettings'
+import type { BookSummary, FavoriteCollection, FavoriteStatus, MetadataFilter, ReadingStatus, Repository } from '@/api/tauri'
+import {
+  batchConfirmationMessage,
+  batchResultSummary,
+  createBatchPartialResult,
+  sourceFilesSafeNotice,
+  type BatchOperationFailure,
+  type BatchOperationItem,
+  type BatchOperationResult,
+} from '@/utils/batchOperations'
 import type { BookSortKey, SortDirection } from '@/utils/bookSort'
 import { getReadingStatus } from '@/utils/readingStatus'
-
-const defaultViewSettings: LibraryViewSettings = {
-  layout: 'grid',
-  coverSize: 'medium',
-  showAuthors: true,
-  showTags: true,
-  tagLimit: 4,
-}
+import {
+  createSavedLibraryView,
+  deleteSavedLibraryView,
+  loadSavedLibraryViews,
+  renameSavedLibraryView,
+  type SavedLibraryView,
+} from '@/utils/savedLibraryViews'
+import {
+  loadRecentLibraryFilters,
+  saveRecentLibraryFilter,
+  type RecentLibraryFilter,
+  type RecentLibraryFilterState,
+} from '@/utils/recentLibraryFilters'
 
 const libraryStateKey = 'inkreader:library-list-state'
 const libraryScrollStateKey = 'inkreader:library-scroll-state'
@@ -68,7 +90,10 @@ const searchDebounceMs = 250
 type LibraryListState = {
   query: string
   repositoryId: string | null
+  selectedAuthors: string[]
   selectedTags: string[]
+  excludedTags: string[]
+  metadataFilters: MetadataFilter[]
   readingStatus: ReadingStatus
   favoriteStatus: FavoriteStatus
   sortKey: BookSortKey
@@ -85,7 +110,10 @@ type LibraryScrollState = {
 const defaultLibraryState: LibraryListState = {
   query: '',
   repositoryId: null,
+  selectedAuthors: [],
   selectedTags: [],
+  excludedTags: [],
+  metadataFilters: [],
   readingStatus: 'all',
   favoriteStatus: 'all',
   sortKey: 'createdAt',
@@ -95,48 +123,134 @@ const defaultLibraryState: LibraryListState = {
 }
 
 const router = useRouter()
+const dialog = useDialog()
 const message = useMessage()
 const libraryState = loadLibraryState()
-const books = ref<BookSummary[]>([])
 const renderedBookCount = ref(0)
-const totalBooks = ref(0)
 const favoriteCollections = ref<FavoriteCollection[]>([])
 const loading = ref(true)
-const pageLoading = ref(false)
 const error = ref('')
-const query = ref(libraryState.query)
-const debouncedQuery = ref(libraryState.query)
 const selectedRepositoryId = ref<string | null>(libraryState.repositoryId)
+const selectedAuthors = ref<string[]>(libraryState.selectedAuthors)
 const selectedTags = ref<string[]>(libraryState.selectedTags)
+const excludedTags = ref<string[]>(libraryState.excludedTags)
+const metadataFilters = ref<MetadataFilter[]>(libraryState.metadataFilters)
 const readingStatus = ref<ReadingStatus>(libraryState.readingStatus)
 const favoriteStatus = ref<FavoriteStatus>(libraryState.favoriteStatus)
-const sortKey = ref<BookSortKey>(libraryState.sortKey)
-const sortDirection = ref<SortDirection>(libraryState.sortDirection)
-const currentPage = ref(libraryState.currentPage)
-const pageSize = ref(libraryState.pageSize)
 const repositories = ref<Repository[]>([])
+const allAuthors = ref<string[]>([])
 const allTags = ref<string[]>([])
 const showViewSettings = ref(false)
-const viewSettings = ref<LibraryViewSettings>({ ...defaultViewSettings })
+const showAdvancedFilters = ref(false)
+const savedViews = ref<SavedLibraryView[]>(loadSavedLibraryViews('library'))
+const recentFilters = ref<RecentLibraryFilter[]>(loadRecentLibraryFilters('library'))
+const selectedSavedViewId = ref<string | null>(null)
+const savedViewModalVisible = ref(false)
+const savedViewName = ref('')
+const renameSavedViewId = ref<string | null>(null)
+const renameSavedViewName = ref('')
+const {
+  viewSettings,
+  loadLibraryViewSettings,
+  saveViewSettings: persistViewSettings,
+} = useLibraryViewSettings({
+  error,
+  onSaveSuccess: (value) => message.success(value),
+})
 const favoriteDialogBook = ref<BookSummary | null>(null)
 const favoriteDialogCollections = ref<Set<string>>(new Set())
 const favoriteDialogLoading = ref(false)
 const newCollectionName = ref('')
-const contextMenuBook = ref<BookSummary | null>(null)
-const contextMenuVisible = ref(false)
-const contextMenuX = ref(0)
-const contextMenuY = ref(0)
-const renameDialogBook = ref<BookSummary | null>(null)
-const renameTitleValue = ref('')
-const renameSubmitting = ref(false)
-let searchTimer: number | undefined
+const batchActionLoading = ref(false)
+const batchResult = ref<BatchOperationResult | null>(null)
+const batchMetadataModalVisible = ref(false)
+const batchMetadataMode = ref<'tags' | 'authors'>('tags')
+const batchMetadataText = ref('')
+const {
+  contextMenuBook,
+  contextMenuVisible,
+  contextMenuX,
+  contextMenuY,
+  openBookContextMenu,
+  closeBookContextMenu,
+} = useBookContextMenu()
+const {
+  renameDialogBook,
+  renameTitleValue,
+  renameSubmitting,
+  openRenameDialog,
+  closeRenameDialog,
+  submitRenameTitle,
+  resetBookTitleFromMenu,
+} = useBookRenameDialog({
+  error,
+  replaceBook,
+  onSuccess: (value) => message.success(value),
+})
+const {
+  books,
+  totalBooks,
+  pageLoading,
+  query,
+  debouncedQuery,
+  sortKey,
+  sortDirection,
+  currentPage,
+  pageSize,
+  pageCount,
+  loadBooks,
+  loadFirstPage,
+  markInitialized: markBookListInitialized,
+  setQueryNow,
+} = useBookListController({
+  defaultPageSize,
+  searchDebounceMs,
+  initialQuery: libraryState.query,
+  initialSortKey: libraryState.sortKey,
+  initialSortDirection: libraryState.sortDirection,
+  initialPageSize: libraryState.pageSize,
+  initialCurrentPage: libraryState.currentPage,
+  error,
+  load: (request) => listBooks({
+    repositoryId: selectedRepositoryId.value,
+    query: request.query,
+    authors: selectedAuthors.value,
+    tags: selectedTags.value,
+    excludeTags: excludedTags.value,
+    metadataFilters: metadataFilters.value,
+    readingStatus: readingStatus.value,
+    favoriteStatus: favoriteStatus.value,
+    sortKey: request.sortKey,
+    sortDirection: request.sortDirection,
+    limit: request.limit,
+    offset: request.offset,
+  }),
+  onStateChanged: saveLibraryState,
+  onItemsLoaded: (response) => {
+    pruneSelectionToCurrentBooks()
+    scheduleBookRendering(response.books.length, loadLibraryScrollTop() > 0)
+    void hydrateBookThumbnails(response.books)
+  },
+  onPageChanged: scrollListToTop,
+})
+const {
+  selectedBookPaths,
+  selectedBooks,
+  selectedCount,
+  allCurrentPageSelected,
+  clearSelection,
+  toggleBookSelection,
+  toggleSelectAllCurrentPage,
+  selectedItems,
+  pruneSelectionToCurrentBooks,
+} = useBookSelection(books)
+const { hydrateBookThumbnails } = useBookThumbnailHydration(books)
 let renderBatchTimer: number | undefined
-let requestToken = 0
-let thumbnailRequestToken = 0
 let initialized = false
 
 const sortKeyOptions: SelectOption[] = [
   { label: '最近阅读', value: 'lastReadAt' },
+  { label: '漫画发布时间', value: 'publishedAt' },
   { label: '创建时间', value: 'createdAt' },
   { label: '名称', value: 'title' },
   { label: '页数', value: 'totalPages' },
@@ -167,22 +281,40 @@ const repositoryOptions = computed<SelectOption[]>(() => [
     value: repository.id,
   })),
 ])
+const authorOptions = computed<SelectOption[]>(() => allAuthors.value.map((author) => ({ label: author, value: author })))
 const tagOptions = computed<SelectOption[]>(() => allTags.value.map((tag) => ({ label: tag, value: tag })))
+const metadataFilterOptions: SelectOption[] = [
+  { label: '缺简介', value: 'missingDescription' },
+  { label: '缺作者', value: 'missingAuthors' },
+  { label: '缺标签', value: 'missingTags' },
+  { label: '缺封面', value: 'missingCover' },
+  { label: '缺发布时间', value: 'missingPublishedAt' },
+]
+const savedViewOptions = computed<SelectOption[]>(() => [
+  { label: '不使用保存视图', value: 'none' },
+  ...savedViews.value.map((view) => ({ label: view.name, value: view.id })),
+])
+const metadataModalTitle = computed(() => (
+  batchMetadataMode.value === 'tags' ? '批量设置标签' : '批量设置作者'
+))
+const batchMetadataValueCount = computed(() => normalizeBatchTextValues(batchMetadataText.value).length)
 const bookContextMenuOptions = computed(() => [
   { label: '重命名标题', key: 'rename' },
   { label: '恢复默认标题', key: 'reset', disabled: !contextMenuBook.value?.titleOverride },
   { label: '标记已读', key: 'mark-read', disabled: !contextMenuBook.value || getReadingStatus(contextMenuBook.value) === 'read' },
   { label: '标记未读', key: 'mark-unread', disabled: !contextMenuBook.value || getReadingStatus(contextMenuBook.value) === 'unread' },
 ])
-const pageCount = computed(() => Math.max(1, Math.ceil(totalBooks.value / pageSize.value)))
-const hasFilters = computed(() => Boolean(
+const hasLibraryFilters = computed(() => Boolean(
   debouncedQuery.value.trim()
     || selectedRepositoryId.value
+    || selectedAuthors.value.length
     || selectedTags.value.length
+    || excludedTags.value.length
+    || metadataFilters.value.length
     || readingStatus.value !== 'all'
     || favoriteStatus.value !== 'all',
 ))
-const shouldShowToolbar = computed(() => totalBooks.value > 0 || books.value.length > 0 || hasFilters.value)
+const shouldShowToolbar = computed(() => totalBooks.value > 0 || books.value.length > 0 || hasLibraryFilters.value)
 const visibleBooks = computed(() => books.value.slice(0, renderedBookCount.value))
 
 async function loadInitialData() {
@@ -190,14 +322,14 @@ async function loadInitialData() {
   error.value = ''
   let shouldRestoreScroll = false
   try {
-    const [nextSettings, nextRepositories] = await Promise.all([
-      getLibraryViewSettings(),
+    const [, nextRepositories] = await Promise.all([
+      loadLibraryViewSettings(),
       listRepositories(),
       loadBooks(),
     ])
     repositories.value = nextRepositories
-    viewSettings.value = { ...defaultViewSettings, ...nextSettings }
     initialized = true
+    markBookListInitialized()
     shouldRestoreScroll = true
     void loadDeferredLibraryData()
   } catch (innerError) {
@@ -209,45 +341,14 @@ async function loadInitialData() {
 }
 
 async function loadDeferredLibraryData() {
-  const [nextCollections, nextTags] = await Promise.all([
+  const [nextCollections, nextAuthors, nextTags] = await Promise.all([
     listFavoriteCollections().catch(() => favoriteCollections.value),
+    listBookAuthors(selectedRepositoryId.value ?? undefined).catch(() => allAuthors.value),
     listBookTags(selectedRepositoryId.value ?? undefined).catch(() => allTags.value),
   ])
   favoriteCollections.value = nextCollections
+  allAuthors.value = nextAuthors
   allTags.value = nextTags
-}
-
-async function loadBooks() {
-  const token = ++requestToken
-  pageLoading.value = true
-  error.value = ''
-  try {
-    const response = await listBooks({
-      repositoryId: selectedRepositoryId.value,
-      query: debouncedQuery.value,
-      tags: selectedTags.value,
-      readingStatus: readingStatus.value,
-      favoriteStatus: favoriteStatus.value,
-      sortKey: sortKey.value,
-      sortDirection: sortDirection.value,
-      limit: pageSize.value,
-      offset: (currentPage.value - 1) * pageSize.value,
-    })
-    if (token !== requestToken) return
-    books.value = response.books
-    scheduleBookRendering(response.books.length, loadLibraryScrollTop() > 0)
-    totalBooks.value = response.total
-    void hydrateVisibleBookThumbnails(response.books)
-    if (currentPage.value > pageCount.value) {
-      currentPage.value = pageCount.value
-      saveLibraryState()
-      await loadBooks()
-    }
-  } catch (innerError) {
-    if (token === requestToken) error.value = String(innerError)
-  } finally {
-    if (token === requestToken) pageLoading.value = false
-  }
 }
 
 function scheduleBookRendering(total: number, renderAll = false) {
@@ -273,29 +374,6 @@ function scheduleNextBookRenderBatch() {
   }, renderedBookBatchDelayMs)
 }
 
-async function hydrateVisibleBookThumbnails(sourceBooks: BookSummary[]) {
-  const missingThumbnailIds = sourceBooks
-    .filter((book) => book.coverPath && !book.thumbnailPath)
-    .map((book) => book.id)
-  if (!missingThumbnailIds.length) return
-
-  const token = ++thumbnailRequestToken
-  const thumbnails = await ensureBookThumbnails(missingThumbnailIds).catch(() => [])
-  if (token !== thumbnailRequestToken || !thumbnails.length) return
-
-  const thumbnailByBookId = new Map(
-    thumbnails
-      .filter((thumbnail) => thumbnail.thumbnailPath)
-      .map((thumbnail) => [thumbnail.bookId, thumbnail.thumbnailPath]),
-  )
-  if (!thumbnailByBookId.size) return
-
-  books.value = books.value.map((book) => {
-    const thumbnailPath = thumbnailByBookId.get(book.id)
-    return thumbnailPath ? { ...book, thumbnailPath } : book
-  })
-}
-
 function loadLibraryState(): LibraryListState {
   try {
     const rawValue = window.localStorage.getItem(libraryStateKey)
@@ -309,11 +387,14 @@ function loadLibraryState(): LibraryListState {
       repositoryId: typeof value.repositoryId === 'string' && value.repositoryId
         ? value.repositoryId
         : defaultLibraryState.repositoryId,
+      selectedAuthors: normalizeStringArray(value.selectedAuthors),
       selectedTags: Array.isArray(value.selectedTags)
         ? value.selectedTags.filter((tag): tag is string => typeof tag === 'string')
         : typeof legacyValue.selectedTag === 'string' && legacyValue.selectedTag
           ? [legacyValue.selectedTag]
           : defaultLibraryState.selectedTags,
+      excludedTags: normalizeStringArray(value.excludedTags),
+      metadataFilters: normalizeMetadataFilters(value.metadataFilters),
       readingStatus: isReadingStatus(value.readingStatus) ? value.readingStatus : defaultLibraryState.readingStatus,
       favoriteStatus: isFavoriteStatus(value.favoriteStatus) ? value.favoriteStatus : defaultLibraryState.favoriteStatus,
       sortKey: isBookSortKey(value.sortKey) ? value.sortKey : defaultLibraryState.sortKey,
@@ -330,7 +411,10 @@ function saveLibraryState() {
   window.localStorage.setItem(libraryStateKey, JSON.stringify({
     query: query.value,
     repositoryId: selectedRepositoryId.value,
+    selectedAuthors: selectedAuthors.value,
     selectedTags: selectedTags.value,
+    excludedTags: excludedTags.value,
+    metadataFilters: metadataFilters.value,
     readingStatus: readingStatus.value,
     favoriteStatus: favoriteStatus.value,
     sortKey: sortKey.value,
@@ -338,6 +422,79 @@ function saveLibraryState() {
     pageSize: pageSize.value,
     currentPage: currentPage.value,
   }))
+}
+
+function currentSavedLibraryViewState() {
+  return {
+    query: query.value,
+    repositoryId: selectedRepositoryId.value,
+    authors: selectedAuthors.value,
+    selectedTags: selectedTags.value,
+    excludeTags: excludedTags.value,
+    metadataFilters: metadataFilters.value,
+    readingStatus: readingStatus.value,
+    favoriteStatus: favoriteStatus.value,
+    sortKey: sortKey.value,
+    sortDirection: sortDirection.value,
+    pageSize: pageSize.value,
+    viewSettings: viewSettings.value,
+  }
+}
+
+function openSaveViewModal() {
+  savedViewName.value = ''
+  savedViewModalVisible.value = true
+}
+
+function saveCurrentView() {
+  savedViews.value = createSavedLibraryView('library', savedViewName.value, currentSavedLibraryViewState())
+  selectedSavedViewId.value = savedViews.value.at(-1)?.id ?? null
+  savedViewModalVisible.value = false
+  message.success('已保存视图')
+}
+
+async function applySavedView(value: string | null) {
+  const id = value && value !== 'none' ? value : null
+  selectedSavedViewId.value = id
+  if (!id) return
+  const savedView = savedViews.value.find((view) => view.id === id)
+  if (!savedView) return
+
+  const state = savedView.state
+  setQueryNow(state.query)
+  selectedRepositoryId.value = state.repositoryId ?? null
+  selectedAuthors.value = state.authors ?? []
+  selectedTags.value = state.selectedTags ?? []
+  excludedTags.value = state.excludeTags ?? []
+  metadataFilters.value = state.metadataFilters ?? []
+  readingStatus.value = state.readingStatus ?? 'all'
+  favoriteStatus.value = state.favoriteStatus ?? 'all'
+  sortKey.value = state.sortKey
+  sortDirection.value = state.sortDirection
+  pageSize.value = state.pageSize
+  viewSettings.value = state.viewSettings
+  saveLibraryState()
+  allAuthors.value = await listBookAuthors(selectedRepositoryId.value ?? undefined).catch(() => [])
+  allTags.value = await listBookTags(selectedRepositoryId.value ?? undefined).catch(() => [])
+  if (initialized) await loadFirstPage()
+}
+
+function beginRenameSavedView(view: SavedLibraryView) {
+  renameSavedViewId.value = view.id
+  renameSavedViewName.value = view.name
+}
+
+function submitRenameSavedView() {
+  const id = renameSavedViewId.value
+  if (!id) return
+  savedViews.value = renameSavedLibraryView('library', id, renameSavedViewName.value)
+  renameSavedViewId.value = null
+  renameSavedViewName.value = ''
+}
+
+function removeSavedView(id: string) {
+  savedViews.value = deleteSavedLibraryView('library', id)
+  if (selectedSavedViewId.value === id) selectedSavedViewId.value = null
 }
 
 function getLibraryScrollElements() {
@@ -358,7 +515,10 @@ function getLibraryScrollSignature() {
   return JSON.stringify({
     query: debouncedQuery.value,
     repositoryId: selectedRepositoryId.value,
+    selectedAuthors: selectedAuthors.value,
     selectedTags: selectedTags.value,
+    excludedTags: excludedTags.value,
+    metadataFilters: metadataFilters.value,
     readingStatus: readingStatus.value,
     favoriteStatus: favoriteStatus.value,
     sortKey: sortKey.value,
@@ -409,7 +569,11 @@ async function restoreLibraryScrollPosition() {
 }
 
 function isBookSortKey(value: unknown): value is BookSortKey {
-  return value === 'title' || value === 'totalPages' || value === 'createdAt' || value === 'lastReadAt'
+  return value === 'title'
+    || value === 'totalPages'
+    || value === 'createdAt'
+    || value === 'lastReadAt'
+    || value === 'publishedAt'
 }
 
 function isSortDirection(value: unknown): value is SortDirection {
@@ -432,8 +596,36 @@ function isPositiveInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) > 0
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)))
+}
+
+function normalizeMetadataFilters(value: unknown): MetadataFilter[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is MetadataFilter => (
+    item === 'missingDescription'
+      || item === 'missingAuthors'
+      || item === 'missingTags'
+      || item === 'missingCover'
+      || item === 'missingPublishedAt'
+  ))
+}
+
+function updateSelectedAuthors(value: string[] | null) {
+  selectedAuthors.value = value ?? []
+}
+
 function updateSelectedTags(value: string[] | null) {
-  selectedTags.value = value ?? []
+  const nextTags = value ?? []
+  selectedTags.value = nextTags
+  excludedTags.value = excludedTags.value.filter((tag) => !nextTags.includes(tag))
+}
+
+function updateExcludedTags(value: string[] | null) {
+  const nextTags = value ?? []
+  excludedTags.value = nextTags
+  selectedTags.value = selectedTags.value.filter((tag) => !nextTags.includes(tag))
 }
 
 function updateSelectedRepository(value: string | null) {
@@ -446,24 +638,45 @@ function selectCardTag(tag: string) {
   }
 }
 
-function openBookContextMenu(payload: { book: BookSummary, x: number, y: number }) {
-  contextMenuBook.value = payload.book
-  contextMenuX.value = payload.x
-  contextMenuY.value = payload.y
-  contextMenuVisible.value = false
-  requestAnimationFrame(() => {
-    contextMenuVisible.value = true
-  })
+function selectCardAuthor(author: string) {
+  const value = author.trim()
+  if (!value) return
+  if (!selectedAuthors.value.includes(value)) {
+    selectedAuthors.value = [...selectedAuthors.value, value]
+  }
+}
+
+function currentRecentFilterState(): RecentLibraryFilterState {
+  return {
+    query: query.value,
+    authors: selectedAuthors.value,
+    tags: selectedTags.value,
+    excludeTags: excludedTags.value,
+    metadataFilters: metadataFilters.value,
+  }
+}
+
+function saveCurrentRecentFilter() {
+  recentFilters.value = saveRecentLibraryFilter('library', currentRecentFilterState())
+}
+
+async function applyRecentFilter(filter: RecentLibraryFilter) {
+  setQueryNow(filter.state.query)
+  selectedAuthors.value = filter.state.authors
+  selectedTags.value = filter.state.tags
+  excludedTags.value = filter.state.excludeTags
+  metadataFilters.value = filter.state.metadataFilters
+  saveLibraryState()
+  if (initialized) await loadFirstPage()
 }
 
 function handleBookContextMenuSelect(key: string | number) {
   const book = contextMenuBook.value
-  contextMenuVisible.value = false
+  closeBookContextMenu()
   if (!book) return
 
   if (key === 'rename') {
-    renameDialogBook.value = book
-    renameTitleValue.value = book.title
+    openRenameDialog(book)
   } else if (key === 'reset') {
     void resetBookTitleFromMenu(book)
   } else if (key === 'mark-read') {
@@ -473,12 +686,6 @@ function handleBookContextMenuSelect(key: string | number) {
   }
 }
 
-function closeRenameDialog() {
-  if (renameSubmitting.value) return
-  renameDialogBook.value = null
-  renameTitleValue.value = ''
-}
-
 function replaceBook(updated: BookSummary) {
   books.value = books.value.map((book) => book.path === updated.path ? { ...book, ...updated } : book)
   if (favoriteDialogBook.value?.path === updated.path) {
@@ -486,37 +693,6 @@ function replaceBook(updated: BookSummary) {
   }
   if (contextMenuBook.value?.path === updated.path) {
     contextMenuBook.value = { ...contextMenuBook.value, ...updated }
-  }
-}
-
-async function submitRenameTitle() {
-  const book = renameDialogBook.value
-  const title = renameTitleValue.value.trim()
-  if (!book || !title || renameSubmitting.value) return
-
-  renameSubmitting.value = true
-  error.value = ''
-  try {
-    const updated = await renameBookTitle(book.path, title)
-    replaceBook(updated)
-    renameDialogBook.value = null
-    renameTitleValue.value = ''
-    message.success('漫画标题已重命名')
-  } catch (innerError) {
-    error.value = String(innerError)
-  } finally {
-    renameSubmitting.value = false
-  }
-}
-
-async function resetBookTitleFromMenu(book: BookSummary) {
-  error.value = ''
-  try {
-    const updated = await resetBookTitle(book.path)
-    replaceBook(updated)
-    message.success('已恢复默认标题')
-  } catch (innerError) {
-    error.value = String(innerError)
   }
 }
 
@@ -547,6 +723,144 @@ async function applyBookStatusUpdate(updated: BookSummary) {
   if (readingStatus.value !== 'all' || favoriteStatus.value !== 'all') {
     await loadBooks()
   }
+}
+
+function confirmDialog(title: string, content: string) {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const settle = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    dialog.warning({
+      title,
+      content,
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: () => settle(true),
+      onNegativeClick: () => settle(false),
+      onClose: () => settle(false),
+    })
+  })
+}
+
+function openBatchMetadataModal(mode: 'tags' | 'authors') {
+  if (!selectedCount.value || batchActionLoading.value) return
+  batchMetadataMode.value = mode
+  batchMetadataText.value = ''
+  batchMetadataModalVisible.value = true
+  batchResult.value = null
+}
+
+function closeBatchMetadataModal() {
+  batchMetadataModalVisible.value = false
+  batchMetadataText.value = ''
+}
+
+async function submitBatchMetadataEdit() {
+  const values = normalizeBatchTextValues(batchMetadataText.value)
+  if (!selectedCount.value || !values.length) return
+
+  const label = batchMetadataMode.value === 'tags' ? '标签' : '作者'
+  const confirmed = await confirmDialog(
+    `批量设置${label}`,
+    batchConfirmationMessage(`设置${label}`, selectedCount.value),
+  )
+  if (!confirmed) return
+
+  const operation = batchMetadataMode.value === 'tags' ? '已设置标签' : '已设置作者'
+  await runSelectedBookBatch(operation, async (book) => {
+    return batchMetadataMode.value === 'tags'
+      ? updateBookTags(book.path, values)
+      : updateBookAuthors(book.path, values)
+  })
+  closeBatchMetadataModal()
+  if (batchMetadataMode.value === 'tags') {
+    allTags.value = await listBookTags(selectedRepositoryId.value ?? undefined).catch(() => allTags.value)
+  }
+}
+
+async function markSelectedBooksRead() {
+  if (!selectedCount.value) return
+  const confirmed = await confirmDialog(
+    '批量标记已读',
+    batchConfirmationMessage('标记已读', selectedCount.value),
+  )
+  if (!confirmed) return
+
+  await runSelectedBookBatch('已标记已读', (book) => markBookRead(book.id))
+}
+
+async function markSelectedBooksUnread() {
+  if (!selectedCount.value) return
+  const confirmed = await confirmDialog(
+    '批量标记未读',
+    batchConfirmationMessage('标记未读', selectedCount.value),
+  )
+  if (!confirmed) return
+
+  await runSelectedBookBatch('已标记未读', (book) => markBookUnread(book.id))
+}
+
+async function resetSelectedBookTitles() {
+  if (!selectedCount.value) return
+  const confirmed = await confirmDialog(
+    '批量恢复扫描标题',
+    batchConfirmationMessage('恢复扫描标题', selectedCount.value),
+  )
+  if (!confirmed) return
+
+  await runSelectedBookBatch('已恢复扫描标题', (book) => resetBookTitle(book.path))
+}
+
+async function runSelectedBookBatch(
+  operation: string,
+  mutateBook: (book: BookSummary) => Promise<BookSummary>,
+) {
+  const sourceBooks = [...selectedBooks.value]
+  const items = selectedItems()
+  if (!sourceBooks.length) return
+
+  error.value = ''
+  batchResult.value = null
+  batchActionLoading.value = true
+  const failed: BatchOperationFailure[] = []
+  const updatedBooks: BookSummary[] = []
+
+  try {
+    for (const book of sourceBooks) {
+      try {
+        updatedBooks.push(await mutateBook(book))
+      } catch (innerError) {
+        failed.push({
+          path: book.path,
+          title: book.title,
+          reason: String(innerError),
+        })
+      }
+    }
+
+    updatedBooks.forEach(replaceBook)
+    batchResult.value = createBatchPartialResult(operation, items, failed)
+    if (failed.length) {
+      message.warning(batchResultSummary(batchResult.value))
+    } else {
+      clearSelection()
+      message.success(batchResultSummary(batchResult.value))
+    }
+
+    if (updatedBooks.length && (readingStatus.value !== 'all' || favoriteStatus.value !== 'all')) {
+      await loadBooks()
+    }
+  } finally {
+    batchActionLoading.value = false
+  }
+}
+
+function normalizeBatchTextValues(value: string) {
+  return [...new Set(value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean))]
 }
 
 function filterTagOption(pattern: string, option: SelectOption) {
@@ -652,13 +966,11 @@ function closeFavoriteDialog() {
 }
 
 async function saveViewSettings() {
-  error.value = ''
   try {
-    await saveLibraryViewSettings(viewSettings.value)
+    await persistViewSettings()
     showViewSettings.value = false
-    message.success('显示设置已保存')
-  } catch (innerError) {
-    error.value = String(innerError)
+  } catch {
+    // Error state is owned by useLibraryViewSettings.
   }
 }
 
@@ -678,42 +990,25 @@ function fuzzyMatch(value: string, normalizedQuery: string) {
   return false
 }
 
-watch(query, () => {
-  saveLibraryState()
-  if (searchTimer) window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(() => {
-    debouncedQuery.value = query.value
-  }, searchDebounceMs)
-})
-
 watch(selectedRepositoryId, async () => {
+  selectedAuthors.value = []
   selectedTags.value = []
+  excludedTags.value = []
   saveLibraryState()
-  allTags.value = await listBookTags(selectedRepositoryId.value ?? undefined).catch(() => [])
+  const [nextAuthors, nextTags] = await Promise.all([
+    listBookAuthors(selectedRepositoryId.value ?? undefined).catch(() => []),
+    listBookTags(selectedRepositoryId.value ?? undefined).catch(() => []),
+  ])
+  allAuthors.value = nextAuthors
+  allTags.value = nextTags
   if (!initialized) return
-  currentPage.value = 1
-  void loadBooks()
+  void loadFirstPage()
 })
 
-watch([selectedTags, readingStatus, favoriteStatus, sortKey, sortDirection, pageSize], () => {
+watch([selectedAuthors, selectedTags, excludedTags, metadataFilters, readingStatus, favoriteStatus], () => {
   saveLibraryState()
   if (!initialized) return
-  currentPage.value = 1
-  void loadBooks()
-})
-
-watch(debouncedQuery, () => {
-  if (!initialized) return
-  currentPage.value = 1
-  saveLibraryState()
-  void loadBooks()
-})
-
-watch(currentPage, async () => {
-  saveLibraryState()
-  if (!initialized) return
-  await loadBooks()
-  await scrollListToTop()
+  void loadFirstPage()
 })
 
 onMounted(loadInitialData)
@@ -722,7 +1017,6 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   saveLibraryScrollPosition()
-  if (searchTimer) window.clearTimeout(searchTimer)
   if (renderBatchTimer) window.clearTimeout(renderBatchTimer)
   window.removeEventListener('inkreader:auto-scan-complete', handleAutoScanComplete)
 })
@@ -761,6 +1055,33 @@ function handleAutoScanComplete() {
 
       <NCard v-if="shouldShowToolbar" class="toolbar-card" :bordered="false">
         <NSpace align="center" :wrap="true">
+          <NSelect
+            :value="selectedSavedViewId ?? 'none'"
+            :options="savedViewOptions"
+            class="saved-view-select"
+            @update:value="applySavedView"
+          />
+          <NButton @click="openSaveViewModal">保存当前视图</NButton>
+          <NTag v-if="selectedSavedViewId" round type="success">已应用保存视图</NTag>
+        </NSpace>
+        <div v-if="savedViews.length" class="saved-view-list">
+          <div v-for="view in savedViews" :key="view.id" class="saved-view-item">
+            <template v-if="renameSavedViewId === view.id">
+              <NInput v-model:value="renameSavedViewName" size="small" class="saved-view-name-input" />
+              <NButton size="small" type="primary" @click="submitRenameSavedView">保存</NButton>
+              <NButton size="small" @click="renameSavedViewId = null">取消</NButton>
+            </template>
+            <template v-else>
+              <NText>{{ view.name }}</NText>
+              <NButton size="small" text @click="beginRenameSavedView(view)">重命名</NButton>
+              <NButton size="small" text type="error" @click="removeSavedView(view.id)">删除</NButton>
+            </template>
+          </div>
+        </div>
+      </NCard>
+
+      <NCard v-if="shouldShowToolbar" class="toolbar-card" :bordered="false">
+        <NSpace align="center" :wrap="true">
           <NInput v-model:value="query" clearable placeholder="搜索标题、作者、标签" class="search-input" />
           <NSelect
             :value="selectedRepositoryId ?? 'all'"
@@ -768,6 +1089,9 @@ function handleAutoScanComplete() {
             class="sort-select"
             @update:value="updateSelectedRepository"
           />
+          <NButton @click="showAdvancedFilters = !showAdvancedFilters">
+            {{ showAdvancedFilters ? '收起筛选' : '高级筛选' }}
+          </NButton>
           <NSelect
             :value="selectedTags"
             clearable
@@ -786,11 +1110,129 @@ function handleAutoScanComplete() {
           <NSelect v-model:value="pageSize" :options="pageSizeOptions" class="sort-select" />
           <NText depth="3">第 {{ currentPage }} / {{ pageCount }} 页，{{ books.length }} / {{ totalBooks }} 本</NText>
         </NSpace>
+        <div v-if="showAdvancedFilters" class="advanced-filter-panel">
+          <NSpace align="center" :wrap="true">
+            <NSelect
+              :value="selectedAuthors"
+              clearable
+              filterable
+              multiple
+              placeholder="筛选作者"
+              :options="authorOptions"
+              class="tag-select"
+              @update:value="updateSelectedAuthors"
+            />
+            <NSelect
+              :value="excludedTags"
+              clearable
+              filterable
+              multiple
+              placeholder="排除标签"
+              :options="tagOptions"
+              :filter="filterTagOption"
+              class="tag-select"
+              @update:value="updateExcludedTags"
+            />
+            <NSelect
+              v-model:value="metadataFilters"
+              clearable
+              multiple
+              placeholder="缺元数据"
+              :options="metadataFilterOptions"
+              class="tag-select"
+            />
+            <NButton secondary @click="saveCurrentRecentFilter">保存最近筛选</NButton>
+          </NSpace>
+          <NSpace v-if="recentFilters.length" class="recent-filter-list" align="center" :wrap="true">
+            <NText depth="3">最近筛选</NText>
+            <NButton
+              v-for="filter in recentFilters"
+              :key="filter.id"
+              size="small"
+              secondary
+              @click="applyRecentFilter(filter)"
+            >
+              {{ filter.label }}
+            </NButton>
+          </NSpace>
+        </div>
       </NCard>
 
       <NCard v-if="!loading && totalBooks > pageSize" class="toolbar-card" :bordered="false">
         <NSpace justify="center" align="center">
           <NPagination v-model:page="currentPage" :page-count="pageCount" />
+        </NSpace>
+      </NCard>
+
+      <NAlert
+        v-if="batchResult"
+        :type="batchResult.failed.length ? 'warning' : 'success'"
+        class="state-block"
+        :show-icon="false"
+      >
+        <NSpace vertical size="small">
+          <NText strong>{{ batchResultSummary(batchResult) }}</NText>
+          <NText depth="3">{{ sourceFilesSafeNotice }}</NText>
+          <NList v-if="batchResult.failed.length" bordered>
+            <NListItem v-for="failure in batchResult.failed" :key="failure.path">
+              <NSpace vertical size="small">
+                <NText>{{ failure.title }}</NText>
+                <NText depth="3">{{ failure.reason }}</NText>
+              </NSpace>
+            </NListItem>
+          </NList>
+        </NSpace>
+      </NAlert>
+
+      <NCard v-if="books.length" :bordered="false" class="toolbar-card">
+        <NSpace justify="space-between" align="center" :wrap="true">
+          <NSpace align="center">
+            <NTag round type="success">已选择 {{ selectedCount }} 本</NTag>
+            <NButton secondary size="small" @click="toggleSelectAllCurrentPage">
+              {{ allCurrentPageSelected ? '取消选择' : '全选当前页' }}
+            </NButton>
+            <NButton v-if="selectedCount" text size="small" @click="clearSelection">清空</NButton>
+          </NSpace>
+          <NSpace>
+            <NButton
+              secondary
+              :disabled="!selectedCount || batchActionLoading"
+              @click="openBatchMetadataModal('tags')"
+            >
+              设置标签
+            </NButton>
+            <NButton
+              secondary
+              :disabled="!selectedCount || batchActionLoading"
+              @click="openBatchMetadataModal('authors')"
+            >
+              设置作者
+            </NButton>
+            <NButton
+              secondary
+              :disabled="!selectedCount || batchActionLoading"
+              :loading="batchActionLoading"
+              @click="markSelectedBooksRead"
+            >
+              标记已读
+            </NButton>
+            <NButton
+              secondary
+              :disabled="!selectedCount || batchActionLoading"
+              :loading="batchActionLoading"
+              @click="markSelectedBooksUnread"
+            >
+              标记未读
+            </NButton>
+            <NButton
+              secondary
+              :disabled="!selectedCount || batchActionLoading"
+              :loading="batchActionLoading"
+              @click="resetSelectedBookTitles"
+            >
+              恢复扫描标题
+            </NButton>
+          </NSpace>
         </NSpace>
       </NCard>
     </div>
@@ -807,16 +1249,20 @@ function handleAutoScanComplete() {
           :books="visibleBooks"
           :settings="viewSettings"
           :highlight-query="debouncedQuery"
+          selectable
+          :selected-book-paths="selectedBookPaths"
           @open="openBook"
           @detail="openBookDetail"
           @toggle-favorite="toggleFavorite"
+          @toggle-selection="toggleBookSelection"
           @select-tag="selectCardTag"
+          @select-author="selectCardAuthor"
           @book-context-menu="openBookContextMenu"
         />
       </NSpin>
     </template>
 
-    <NEmpty v-else-if="hasFilters" class="state-block" description="没有匹配结果">
+    <NEmpty v-else-if="hasLibraryFilters" class="state-block" description="没有匹配结果">
       <template #extra>
         <NText depth="3">调整搜索词或标签筛选。</NText>
       </template>
@@ -841,8 +1287,61 @@ function handleAutoScanComplete() {
       :show="contextMenuVisible"
       :options="bookContextMenuOptions"
       @select="handleBookContextMenuSelect"
-      @clickoutside="contextMenuVisible = false"
+      @clickoutside="closeBookContextMenu"
     />
+
+    <NModal
+      :show="savedViewModalVisible"
+      preset="card"
+      title="保存当前视图"
+      class="favorite-modal"
+      :style="{ width: 'min(420px, calc(100vw - 32px))' }"
+      @update:show="(value) => { savedViewModalVisible = value }"
+    >
+      <form @submit.prevent="saveCurrentView">
+        <NSpace vertical size="large">
+          <NInput v-model:value="savedViewName" placeholder="视图名称" autofocus />
+          <NSpace justify="end">
+            <NButton @click="savedViewModalVisible = false">取消</NButton>
+            <NButton type="primary" attr-type="submit" :disabled="!savedViewName.trim()">保存</NButton>
+          </NSpace>
+        </NSpace>
+      </form>
+    </NModal>
+
+    <NModal
+      :show="batchMetadataModalVisible"
+      preset="card"
+      :title="metadataModalTitle"
+      class="favorite-modal"
+      :style="{ width: 'min(520px, calc(100vw - 32px))' }"
+      @update:show="(value) => { if (!value) closeBatchMetadataModal() }"
+    >
+      <form @submit.prevent="submitBatchMetadataEdit">
+        <NSpace vertical size="large">
+          <NText depth="3">
+            已选择 {{ selectedCount }} 本漫画。输入多个{{ batchMetadataMode === 'tags' ? '标签' : '作者' }}时可用逗号或换行分隔。{{ sourceFilesSafeNotice }}
+          </NText>
+          <NInput
+            v-model:value="batchMetadataText"
+            type="textarea"
+            :placeholder="batchMetadataMode === 'tags' ? '例如：热血, 完结, 长篇' : '例如：作者 A, 作者 B'"
+            :autosize="{ minRows: 4, maxRows: 8 }"
+          />
+          <NSpace justify="end">
+            <NButton :disabled="batchActionLoading" @click="closeBatchMetadataModal">取消</NButton>
+            <NButton
+              type="primary"
+              attr-type="submit"
+              :loading="batchActionLoading"
+              :disabled="!batchMetadataValueCount"
+            >
+              保存 {{ batchMetadataValueCount }} 项
+            </NButton>
+          </NSpace>
+        </NSpace>
+      </form>
+    </NModal>
 
     <NModal
       :show="Boolean(renameDialogBook)"

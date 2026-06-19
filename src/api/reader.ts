@@ -19,3 +19,7 @@ export function markBookUnread(bookId: string): Promise<Book> {
 export function listReadingHistory(): Promise<ReadingHistoryRecord[]> {
   return call('list_reading_history')
 }
+
+export function listReadingHistoryByBook(): Promise<ReadingHistoryRecord[]> {
+  return call('list_reading_history_by_book')
+}

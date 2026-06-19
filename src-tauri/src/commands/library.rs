@@ -3,7 +3,10 @@ use tauri::State;
 use crate::{
     errors::AppResult,
     models::{
-        book::{Book, BookListRequest, BookListResponse, BookThumbnail, UpdateBookMetadataRequest},
+        book::{
+            Book, BookAggregationItem, BookListRequest, BookListResponse, BookThumbnail,
+            UpdateBookMetadataRequest,
+        },
         chapter::Chapter,
         favorite::FavoriteCollection,
     },
@@ -43,6 +46,30 @@ pub fn list_book_tags(
 }
 
 #[tauri::command]
+pub fn list_book_authors(
+    state: State<'_, AppState>,
+    repository_id: Option<String>,
+) -> AppResult<Vec<String>> {
+    state.database.list_book_authors(repository_id)
+}
+
+#[tauri::command]
+pub fn list_book_tag_aggregations(
+    state: State<'_, AppState>,
+    query: Option<String>,
+) -> AppResult<Vec<BookAggregationItem>> {
+    state.database.list_book_tag_aggregations(query)
+}
+
+#[tauri::command]
+pub fn list_book_author_aggregations(
+    state: State<'_, AppState>,
+    query: Option<String>,
+) -> AppResult<Vec<BookAggregationItem>> {
+    state.database.list_book_author_aggregations(query)
+}
+
+#[tauri::command]
 pub fn list_favorite_collections(state: State<'_, AppState>) -> AppResult<Vec<FavoriteCollection>> {
     state.database.list_favorite_collections()
 }
@@ -64,6 +91,20 @@ pub fn rename_favorite_collection(
     state
         .database
         .rename_favorite_collection(&collection_id, &name)
+}
+
+#[tauri::command]
+pub fn update_favorite_collection_metadata(
+    state: State<'_, AppState>,
+    collection_id: String,
+    cover_path: Option<String>,
+    description: Option<String>,
+) -> AppResult<FavoriteCollection> {
+    state.database.update_favorite_collection_metadata(
+        &collection_id,
+        cover_path.as_deref(),
+        description.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -179,6 +220,24 @@ pub fn update_book_metadata(
     request: UpdateBookMetadataRequest,
 ) -> AppResult<Book> {
     state.database.update_book_metadata(request)
+}
+
+#[tauri::command]
+pub fn update_book_authors(
+    state: State<'_, AppState>,
+    book_path: String,
+    authors: Vec<String>,
+) -> AppResult<Book> {
+    state.database.update_book_authors(&book_path, authors)
+}
+
+#[tauri::command]
+pub fn update_book_tags(
+    state: State<'_, AppState>,
+    book_path: String,
+    tags: Vec<String>,
+) -> AppResult<Book> {
+    state.database.update_book_tags(&book_path, tags)
 }
 
 #[tauri::command]

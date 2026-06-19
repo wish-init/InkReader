@@ -27,6 +27,10 @@ impl ComicMetadata {
     pub fn source_id(&self) -> Option<String> {
         value_to_string(self.id.as_ref())
     }
+
+    pub fn published_at(&self) -> Option<String> {
+        value_to_string(self.addtime.as_ref())
+    }
 }
 
 pub fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {

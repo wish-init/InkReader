@@ -1,12 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NAlert, NButton, NCard, NEmpty, NEllipsis, NPageHeader, NSelect, NSpace, NSpin, NText, type SelectOption } from 'naive-ui'
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NEmpty,
+  NEllipsis,
+  NPageHeader,
+  NRadioButton,
+  NRadioGroup,
+  NSelect,
+  NSpace,
+  NSpin,
+  NText,
+  type SelectOption,
+} from 'naive-ui'
 import { toArchiveUrl } from '@/api/archive'
-import { listReadingHistory } from '@/api/reader'
+import { listReadingHistory, listReadingHistoryByBook } from '@/api/reader'
 import { toAssetUrl, type ReadingHistoryRecord } from '@/api/tauri'
 
+type ViewMode = 'books' | 'raw'
 type GroupMode = 'day' | 'week' | 'month'
+
+type ViewModeOption = {
+  label: string
+  value: ViewMode
+}
 
 type HistoryGroup = {
   key: string
@@ -15,10 +35,17 @@ type HistoryGroup = {
 }
 
 const router = useRouter()
-const records = ref<ReadingHistoryRecord[]>([])
+const bookRecords = ref<ReadingHistoryRecord[]>([])
+const rawRecords = ref<ReadingHistoryRecord[]>([])
 const loading = ref(true)
 const error = ref('')
+const viewMode = ref<ViewMode>('books')
 const groupMode = ref<GroupMode>('day')
+
+const viewModeOptions: ViewModeOption[] = [
+  { label: '按书', value: 'books' },
+  { label: '原始记录', value: 'raw' },
+]
 
 const groupModeOptions: SelectOption[] = [
   { label: '按日', value: 'day' },
@@ -26,9 +53,9 @@ const groupModeOptions: SelectOption[] = [
   { label: '按月', value: 'month' },
 ]
 
-const groups = computed<HistoryGroup[]>(() => {
+const rawGroups = computed<HistoryGroup[]>(() => {
   const values = new Map<string, HistoryGroup>()
-  for (const record of records.value) {
+  for (const record of rawRecords.value) {
     const group = historyGroup(record.readAt, groupMode.value)
     const existing = values.get(group.key)
     if (existing) {
@@ -44,7 +71,12 @@ async function loadHistory() {
   loading.value = true
   error.value = ''
   try {
-    records.value = await listReadingHistory()
+    const [groupedHistory, rawHistory] = await Promise.all([
+      listReadingHistoryByBook(),
+      listReadingHistory(),
+    ])
+    bookRecords.value = groupedHistory
+    rawRecords.value = rawHistory
   } catch (innerError) {
     error.value = String(innerError)
   } finally {
@@ -58,7 +90,6 @@ function openRecord(record: ReadingHistoryRecord) {
 
 function getRecordCoverUrl(record: ReadingHistoryRecord): string | undefined {
   if (record.bookKind !== 'folder' && record.coverPath) {
-    // For archive books, coverPath stores the entry name, and bookPath stores the archive path
     return toArchiveUrl(record.bookPath, record.coverPath)
   }
   return toAssetUrl(record.coverPath)
@@ -107,6 +138,10 @@ function formatReadTime(value: string) {
   })
 }
 
+function progressLabel(record: ReadingHistoryRecord) {
+  return `${record.chapterTitle || '未知章节'} · 读到第 ${record.page + 1} 页`
+}
+
 function pad(value: number) {
   return String(value).padStart(2, '0')
 }
@@ -118,9 +153,24 @@ onMounted(loadHistory)
   <section class="page-section">
     <NPageHeader>
       <template #title>阅读记录</template>
-      <template #subtitle>按日、周、月查看最近阅读过的漫画。</template>
+      <template #subtitle>按书查看最近阅读进度，也可以切换到原始阅读记录。</template>
       <template #extra>
-        <NSelect v-model:value="groupMode" :options="groupModeOptions" class="sort-select" />
+        <div class="history-toolbar">
+          <NRadioGroup v-model:value="viewMode" size="small">
+            <NRadioButton
+              v-for="option in viewModeOptions"
+              :key="String(option.value)"
+              :value="option.value"
+              :label="option.label"
+            />
+          </NRadioGroup>
+          <NSelect
+            v-if="viewMode === 'raw'"
+            v-model:value="groupMode"
+            :options="groupModeOptions"
+            class="sort-select"
+          />
+        </div>
       </template>
     </NPageHeader>
 
@@ -129,8 +179,35 @@ onMounted(loadHistory)
     </NAlert>
     <NSpin v-if="loading" class="state-block" description="正在加载阅读记录..." />
 
-    <NSpace v-else-if="groups.length" vertical size="large" class="history-groups">
-      <section v-for="group in groups" :key="group.key" class="history-group">
+    <NSpace v-else-if="viewMode === 'books' && bookRecords.length" vertical size="small" class="history-groups">
+      <NCard
+        v-for="record in bookRecords"
+        :key="record.bookId"
+        embedded
+        :bordered="false"
+        class="history-card"
+        role="button"
+        tabindex="0"
+        @click="openRecord(record)"
+        @keydown.enter="openRecord(record)"
+        @keydown.space.prevent="openRecord(record)"
+      >
+        <div class="history-card-body">
+          <div class="history-cover">
+            <img v-if="getRecordCoverUrl(record)" :src="getRecordCoverUrl(record)" :alt="record.bookTitle" />
+            <div v-else class="cover-placeholder">无封面</div>
+          </div>
+          <div class="history-info">
+            <NEllipsis class="history-title">{{ record.bookTitle }}</NEllipsis>
+            <NText depth="3">{{ progressLabel(record) }}</NText>
+            <NText depth="3">最近阅读 {{ formatReadTime(record.readAt) }}</NText>
+          </div>
+        </div>
+      </NCard>
+    </NSpace>
+
+    <NSpace v-else-if="viewMode === 'raw' && rawGroups.length" vertical size="large" class="history-groups">
+      <section v-for="group in rawGroups" :key="group.key" class="history-group">
         <h2 class="section-title">{{ group.label }}</h2>
         <NSpace vertical size="small">
           <NCard
@@ -152,7 +229,7 @@ onMounted(loadHistory)
               </div>
               <div class="history-info">
                 <NEllipsis class="history-title">{{ record.bookTitle }}</NEllipsis>
-                <NText depth="3">{{ record.chapterTitle || '未知章节' }} · 读到第 {{ record.page + 1 }} 页</NText>
+                <NText depth="3">{{ progressLabel(record) }}</NText>
                 <NText depth="3">{{ formatReadTime(record.readAt) }}</NText>
               </div>
             </div>
